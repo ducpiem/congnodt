@@ -151,8 +151,8 @@ if not st.session_state['logged_in']:
             st.write("---")
             # Khối Admin (Pass mặc định: admin123)
             with st.expander("👑 Đăng nhập Admin (Full quyền)"):
-                admin_u = st.text_input("Tài khoản Admin (Mặc định: admin)", key="ad_u")
-                admin_p = st.text_input("Mật khẩu Admin (Mặc định: admin123)", type="password", key="ad_p")
+                admin_u = st.text_input("Tài khoản Admin ", key="ad_u")
+                admin_p = st.text_input("Mật khẩu Admin ", type="password", key="ad_p")
                 if st.button("Đăng nhập Admin", use_container_width=True):
                     res_ad = run_query("SELECT role, group_id FROM users WHERE username = :u AND password = :p AND role='admin'", 
                                      params={"u": admin_u, "p": admin_p})
