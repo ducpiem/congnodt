@@ -101,6 +101,8 @@ def init_db():
         count = s.execute(text("SELECT COUNT(*) FROM users WHERE role='admin';")).scalar()
         if count == 0:
             s.execute(text("INSERT INTO users (username, password, role, group_id) VALUES ('admin', 'admin123', 'admin', 'ALL')"))
+            # Thêm dòng này để ép đổi mật khẩu Admin thành admin123
+        s.execute(text("UPDATE users SET password = 'admin123' WHERE username = 'admin';"))
         s.commit()
 
 init_db()
