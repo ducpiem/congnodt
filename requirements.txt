@@ -1,4 +1,4 @@
 streamlit
-google-generativeai
-edge-tts
-requests
+pandas
+SQLAlchemy
+psycopg2-binary
