@@ -40,7 +40,6 @@ st.markdown("""
 conn = st.connection("neon", type="sql")
 
 def run_query(sql, params=None):
-    # Đổi sang engine.connect() ép đọc DB thật, không dùng cache ảo của session
     with conn.engine.connect() as c:
         result = c.execute(text(sql), params or {})
         keys = result.keys()
@@ -74,18 +73,21 @@ def init_db():
 
 init_db()
 
-# --- Các hàm Data ---
-def fetch_debts(role, group_id):
-    sql = "SELECT id, title, borrower, lender, total_amount, paid_amount, note, created_at, group_id FROM debts " + ("ORDER BY id DESC" if role == 'admin' else "WHERE group_id = :g ORDER BY id DESC")
-    return run_query(sql, params={"g": group_id})
+# --- Các hàm Data (Đã update lọc theo nhóm) ---
+def fetch_debts(view_group):
+    if view_group == "ALL":
+        return run_query("SELECT id, title, borrower, lender, total_amount, paid_amount, note, created_at, group_id FROM debts ORDER BY id DESC")
+    return run_query("SELECT id, title, borrower, lender, total_amount, paid_amount, note, created_at, group_id FROM debts WHERE group_id = :g ORDER BY id DESC", params={"g": view_group})
 
-def fetch_logs(role, group_id):
-    sql = "SELECT l.id, l.created_at, d.group_id, d.title, l.log_type, l.amount, l.note, l.created_by FROM debt_logs l JOIN debts d ON l.debt_id = d.id " + ("ORDER BY l.id DESC" if role == 'admin' else "WHERE d.group_id = :g ORDER BY l.id DESC")
-    return run_query(sql, params={"g": group_id})
+def fetch_logs(view_group):
+    if view_group == "ALL":
+        return run_query("SELECT l.id, l.created_at, d.group_id, d.title, l.log_type, l.amount, l.note, l.created_by FROM debt_logs l JOIN debts d ON l.debt_id = d.id ORDER BY l.id DESC")
+    return run_query("SELECT l.id, l.created_at, d.group_id, d.title, l.log_type, l.amount, l.note, l.created_by FROM debt_logs l JOIN debts d ON l.debt_id = d.id WHERE d.group_id = :g ORDER BY l.id DESC", params={"g": view_group})
 
-def fetch_expenses(role, group_id):
-    sql = "SELECT id, title, amount, category, paid_by, note, expense_date, group_id FROM expenses " + ("ORDER BY expense_date DESC, id DESC" if role == 'admin' else "WHERE group_id = :g ORDER BY expense_date DESC, id DESC")
-    return run_query(sql, params={"g": group_id})
+def fetch_expenses(view_group):
+    if view_group == "ALL":
+        return run_query("SELECT id, title, amount, category, paid_by, note, expense_date, group_id FROM expenses ORDER BY expense_date DESC, id DESC")
+    return run_query("SELECT id, title, amount, category, paid_by, note, expense_date, group_id FROM expenses WHERE group_id = :g ORDER BY expense_date DESC, id DESC", params={"g": view_group})
 
 # --- 4. GIAO DIỆN ĐĂNG NHẬP ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -143,10 +145,18 @@ if not st.session_state['logged_in']:
 st.sidebar.markdown(f"👤 Tài khoản: **{st.session_state['username']}**")
 st.sidebar.markdown(f"🏷️ Quyền: **{st.session_state['role'].upper()}**")
 
-# Thêm nút Làm mới ở đây thay vì dùng F5
-if st.sidebar.button("🔄 Làm mới dữ liệu", use_container_width=True):
-    st.rerun()
+# BỘ LỌC ADMIN
+if st.session_state['role'] == 'admin':
+    st.sidebar.write("---")
+    groups_df = run_query("SELECT username FROM users WHERE role='user'")
+    all_groups = groups_df['username'].tolist() if not groups_df.empty else []
+    view_mode = st.sidebar.selectbox("📂 Lọc dữ liệu theo Sổ:", ["Tất cả các sổ"] + all_groups)
+    current_view_group = "ALL" if view_mode == "Tất cả các sổ" else view_mode
+else:
+    current_view_group = st.session_state['group_id']
 
+st.sidebar.write("---")
+if st.sidebar.button("🔄 Làm mới dữ liệu", use_container_width=True): st.rerun()
 st.sidebar.write("---")
 
 app_mode = st.sidebar.radio("📌 CHỌN CHỨC NĂNG:", ["💸 Sổ Nợ Nần", "🛒 Sổ Chi Tiêu"])
@@ -161,7 +171,7 @@ if st.sidebar.button("Đăng xuất", use_container_width=True):
 # ==========================================
 if app_mode == "💸 Sổ Nợ Nần":
     st.markdown('<div class="main-title">💸 SỔ GHI NỢ DÙNG CHUNG</div>', unsafe_allow_html=True)
-    df = fetch_debts(st.session_state['role'], st.session_state['group_id'])
+    df = fetch_debts(current_view_group)
 
     if not df.empty:
         df["total_amount"] = pd.to_numeric(df["total_amount"])
@@ -186,32 +196,35 @@ if app_mode == "💸 Sổ Nợ Nần":
             st.dataframe(display_df[["id", "Ngày vay", "group_id", "title", "borrower", "lender", "total_amount", "paid_amount", "remaining", "Trạng thái", "note"]], hide_index=True, use_container_width=True)
             
             st.subheader("🔍 Nhật Ký Giao Dịch (Trả/Sửa)")
-            logs_df = fetch_logs(st.session_state['role'], st.session_state['group_id'])
+            logs_df = fetch_logs(current_view_group)
             if not logs_df.empty:
                 logs_df['Thời gian'] = logs_df['created_at'].apply(lambda dt: pd.to_datetime(dt).strftime('%d/%m/%Y %H:%M') if pd.notna(dt) else "")
                 st.dataframe(logs_df[["Thời gian", "group_id", "title", "log_type", "amount", "note", "created_by"]], hide_index=True, use_container_width=True)
         else: st.info("Sổ nợ trống.")
 
     with tab2:
-        with st.form("add_debt_form", clear_on_submit=True):
-            title = st.text_input("Nội dung khoản nợ")
-            col_a, col_b = st.columns(2)
-            borrower = col_a.text_input("Người nợ (Ai vay?)")
-            lender = col_b.text_input("Chủ nợ (Ai cho mượn?)")
-            total_amount = st.number_input("Tổng tiền (VNĐ)", min_value=0.0, step=50000.0, format="%.0f")
-            note = st.text_area("Ghi chú")
-            if st.form_submit_button("💾 LƯU KHOẢN NỢ", type="primary"):
-                if title and total_amount > 0:
-                    with conn.session as s:
-                        s.execute(text("INSERT INTO debts (title, borrower, lender, total_amount, paid_amount, note, group_id) VALUES (:t, :b, :l, :a, 0, :n, :g)"), {"t": title, "b": borrower, "l": lender, "a": float(total_amount), "n": note, "g": st.session_state['group_id']})
-                        s.commit()
-                    st.success("Đã ghi nợ!"); st.rerun()
-                else: st.error("Nhập đủ Nội dung và Số tiền!")
+        if current_view_group == "ALL" and st.session_state['role'] == 'admin':
+            st.warning("⚠️ **Quyền Admin:** Bạn đang xem Tất cả các sổ. Vui lòng chọn cụ thể 1 Sổ ở Sidebar bên trái nếu muốn thêm khoản nợ.")
+        else:
+            with st.form("add_debt_form", clear_on_submit=True):
+                title = st.text_input("Nội dung khoản nợ")
+                col_a, col_b = st.columns(2)
+                borrower = col_a.text_input("Người nợ (Ai vay?)")
+                lender = col_b.text_input("Chủ nợ (Ai cho mượn?)")
+                total_amount = st.number_input("Tổng tiền (VNĐ)", min_value=0.0, step=50000.0, format="%.0f")
+                note = st.text_area("Ghi chú")
+                if st.form_submit_button("💾 LƯU KHOẢN NỢ", type="primary"):
+                    if title and total_amount > 0:
+                        with conn.session as s:
+                            s.execute(text("INSERT INTO debts (title, borrower, lender, total_amount, paid_amount, note, group_id) VALUES (:t, :b, :l, :a, 0, :n, :g)"), {"t": title, "b": borrower, "l": lender, "a": float(total_amount), "n": note, "g": current_view_group})
+                            s.commit()
+                        st.success("Đã ghi nợ!"); st.rerun()
+                    else: st.error("Nhập đủ Nội dung và Số tiền!")
 
     with tab3:
         if not df.empty and not df[df["remaining"] > 0].empty:
             unpaid_df = df[df["remaining"] > 0]
-            opts = {f"#{row['id']} - {row['title']} | Thiếu: {float(row['remaining']):,.0f} ₫": int(row['id']) for _, row in unpaid_df.iterrows()}
+            opts = {f"#{row['id']} [{row['group_id']}] - {row['title']} | Thiếu: {float(row['remaining']):,.0f} ₫": int(row['id']) for _, row in unpaid_df.iterrows()}
             sel_id = opts[st.selectbox("Chọn nợ:", list(opts.keys()))]
             row_sel = df[df["id"] == sel_id].iloc[0]
             pay_amt = st.number_input("Số tiền trả", min_value=1.0, max_value=float(row_sel["remaining"]), value=float(row_sel["remaining"]), step=10000.0)
@@ -227,7 +240,7 @@ if app_mode == "💸 Sổ Nợ Nần":
 
     with tab4:
         if not df.empty:
-            opts = {f"#{row['id']} - {row['title']} | Gốc: {float(row['total_amount']):,.0f} ₫": int(row['id']) for _, row in df.iterrows()}
+            opts = {f"#{row['id']} [{row['group_id']}] - {row['title']} | Gốc: {float(row['total_amount']):,.0f} ₫": int(row['id']) for _, row in df.iterrows()}
             sel_id = opts[st.selectbox("Chọn khoản nợ bị sai:", list(opts.keys()))]
             adj_type = st.radio("Thao tác:", ["Cộng thêm (ghi thiếu)", "Trừ bớt (ghi thừa)"], horizontal=True)
             adj_amt = st.number_input("Số tiền điều chỉnh", min_value=1.0, step=10000.0)
@@ -250,7 +263,11 @@ if app_mode == "💸 Sổ Nợ Nần":
             st.info("👑 **Quyền Admin:** Bạn có thể chọn tích chọn xóa cụ thể các khoản nợ, xóa sổ nợ theo nhóm hoặc reset toàn bộ hệ thống.")
             
             st.markdown("### 🗑️ 1. Xóa Chi Tiết Các Khoản Nợ (Tích Chọn)")
-            admin_df = run_query("SELECT id, group_id, title, total_amount FROM debts ORDER BY id DESC")
+            if current_view_group == "ALL":
+                admin_df = run_query("SELECT id, group_id, title, total_amount FROM debts ORDER BY id DESC")
+            else:
+                admin_df = run_query("SELECT id, group_id, title, total_amount FROM debts WHERE group_id = :g ORDER BY id DESC", {"g": current_view_group})
+                
             if not admin_df.empty:
                 admin_df['Chọn'] = False
                 edited_df = st.data_editor(
@@ -275,13 +292,13 @@ if app_mode == "💸 Sổ Nợ Nần":
                             s.commit()
                         st.success(f"🧹 Đã xóa thành công {len(sel_ids)} khoản nợ!"); st.rerun()
             else:
-                st.caption("Không có khoản nợ nào trong hệ thống.")
+                st.caption("Không có khoản nợ nào trong sổ này.")
 
             st.write("---")
             st.markdown("### 🗑️ 2. Xóa Vĩnh Viễn 1 Sổ Nợ Cụ Thể")
             all_users = run_query("SELECT username FROM users WHERE role='user'")
             if not all_users.empty:
-                group_to_delete = st.selectbox("Chọn sổ nợ (Tên cặp) muốn xóa hoàn toàn:", all_users['username'].tolist())
+                group_to_delete = st.selectbox("Chọn sổ nợ (Tên cặp) muốn xóa hoàn toàn:", all_users['username'].tolist(), index=0)
                 confirm_del_single = st.text_input(f"Gõ đúng chữ **`XOASO`** để xác nhận xóa sổ [{group_to_delete}]:", key="del_single_box")
                 
                 if st.button(f"🔥 XÓA VĨNH VIỄN SỔ [{group_to_delete}]", type="primary", disabled=(confirm_del_single.strip().upper() != "XOASO")):
@@ -336,7 +353,7 @@ elif app_mode == "🛒 Sổ Chi Tiêu":
     st.markdown('<div class="exp-title">🛒 SỔ GHI CHÉP CHI TIÊU</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Ghi chép và theo dõi dòng tiền hàng ngày</div>', unsafe_allow_html=True)
     
-    exp_df = fetch_expenses(st.session_state['role'], st.session_state['group_id'])
+    exp_df = fetch_expenses(current_view_group)
     
     if not exp_df.empty:
         exp_df["amount"] = pd.to_numeric(exp_df["amount"])
@@ -368,30 +385,33 @@ elif app_mode == "🛒 Sổ Chi Tiêu":
             st.info("Chưa có khoản chi nào. Hãy thêm khoản chi đầu tiên nhé!")
 
     with tab_e2:
-        with st.form("add_exp_form", clear_on_submit=True):
-            exp_title = st.text_input("Nội dung chi (VD: Đi siêu thị, Ăn lẩu)")
-            exp_amount = st.number_input("Số tiền (VNĐ)", min_value=0.0, step=50000.0, format="%.0f")
-            
-            col_x, col_y, col_z = st.columns(3)
-            exp_cat = col_x.selectbox("Danh mục", ["Ăn uống", "Mua sắm", "Hóa đơn/Tiện ích", "Giải trí", "Đi lại", "Khác"])
-            exp_paid_by = col_y.text_input("Người rút ví trả")
-            exp_date = col_z.date_input("Ngày chi", value=date.today())
-            exp_note = st.text_area("Ghi chú thêm (Tùy chọn)")
-            
-            if st.form_submit_button("🛒 LƯU KHOẢN CHI", type="primary"):
-                if exp_title and exp_amount > 0:
-                    with conn.session as s:
-                        s.execute(text("""
-                            INSERT INTO expenses (title, amount, category, paid_by, note, expense_date, group_id) 
-                            VALUES (:t, :a, :c, :p, :n, :d, :g)
-                        """), {
-                            "t": exp_title, "a": float(exp_amount), "c": exp_cat, 
-                            "p": exp_paid_by, "n": exp_note, "d": exp_date, "g": st.session_state['group_id']
-                        })
-                        s.commit()
-                    st.success("Đã ghi nhận khoản chi thành công!"); st.rerun()
-                else:
-                    st.error("⚠️ Vui lòng nhập Tên khoản chi và Số tiền lớn hơn 0.")
+        if current_view_group == "ALL" and st.session_state['role'] == 'admin':
+             st.warning("⚠️ **Quyền Admin:** Bạn đang xem Tất cả các sổ. Vui lòng chọn cụ thể 1 Sổ ở Sidebar bên trái nếu muốn thêm khoản chi.")
+        else:
+            with st.form("add_exp_form", clear_on_submit=True):
+                exp_title = st.text_input("Nội dung chi (VD: Đi siêu thị, Ăn lẩu)")
+                exp_amount = st.number_input("Số tiền (VNĐ)", min_value=0.0, step=50000.0, format="%.0f")
+                
+                col_x, col_y, col_z = st.columns(3)
+                exp_cat = col_x.selectbox("Danh mục", ["Ăn uống", "Mua sắm", "Hóa đơn/Tiện ích", "Giải trí", "Đi lại", "Khác"])
+                exp_paid_by = col_y.text_input("Người rút ví trả")
+                exp_date = col_z.date_input("Ngày chi", value=date.today())
+                exp_note = st.text_area("Ghi chú thêm (Tùy chọn)")
+                
+                if st.form_submit_button("🛒 LƯU KHOẢN CHI", type="primary"):
+                    if exp_title and exp_amount > 0:
+                        with conn.session as s:
+                            s.execute(text("""
+                                INSERT INTO expenses (title, amount, category, paid_by, note, expense_date, group_id) 
+                                VALUES (:t, :a, :c, :p, :n, :d, :g)
+                            """), {
+                                "t": exp_title, "a": float(exp_amount), "c": exp_cat, 
+                                "p": exp_paid_by, "n": exp_note, "d": exp_date, "g": current_view_group
+                            })
+                            s.commit()
+                        st.success("Đã ghi nhận khoản chi thành công!"); st.rerun()
+                    else:
+                        st.error("⚠️ Vui lòng nhập Tên khoản chi và Số tiền lớn hơn 0.")
 
     with tab_e3:
         if st.session_state['role'] == 'admin':
