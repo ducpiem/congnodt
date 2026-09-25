@@ -256,7 +256,7 @@ with tab1:
                 "paid_amount": st.column_config.NumberColumn("Đã trả", format="%.0f ₫"),
                 "remaining": st.column_config.NumberColumn("Còn thiếu", format="%.0f ₫"),
                 "Trạng thái": st.column_config.TextColumn("Trạng thái", width="small"),
-                "note": st.column_config.TextColumn("Ghi chú", width="medium"),
+                "note": st.column_config.TextColumn("Ghi chú (Lịch sử sửa đổi)", width="large"),
             },
             use_container_width=True, hide_index=True, height=400
         )
@@ -321,7 +321,7 @@ with tab3:
 
 with tab4:
     st.subheader("✏️ Điều Chỉnh Khoản Nợ (Ghi Nhầm)")
-    st.info("Dùng khi bạn lỡ nhập sai số tiền gốc (thừa hoặc thiếu) và muốn cộng/trừ lại cho chuẩn.")
+    st.info("Dùng khi bạn lỡ nhập sai số tiền gốc (thừa hoặc thiếu) và muốn cộng/trừ lại cho chuẩn. Hệ thống sẽ lưu lại người sửa và lý do vào cột ghi chú.")
     if not df.empty:
         adj_options = {
             f"#{row['id']} - {row['title']} | Nợ gốc hiện tại: {float(row['total_amount']):,.0f} ₫": int(row['id']) 
@@ -342,15 +342,20 @@ with tab4:
                 current_total = float(selected_row_adj["total_amount"])
                 current_note = str(selected_row_adj["note"]) if pd.notna(selected_row_adj["note"]) and str(selected_row_adj["note"]).strip() != "" else ""
                 
+                # Lấy thời gian hiện tại
+                time_str = datetime.now().strftime('%d/%m %H:%M')
+                actor = st.session_state['username']
+                
                 if "Cộng" in adj_type:
                     new_total = current_total + adj_amount
-                    note_append = f"[+ {adj_amount:,.0f}đ: {adj_note}]"
+                    note_append = f"[{time_str} | +{adj_amount:,.0f}đ bởi {actor}: {adj_note}]"
                 else:
                     new_total = current_total - adj_amount
                     if new_total < 0: 
                         new_total = 0
-                    note_append = f"[- {adj_amount:,.0f}đ: {adj_note}]"
+                    note_append = f"[{time_str} | -{adj_amount:,.0f}đ bởi {actor}: {adj_note}]"
                 
+                # Nối ghi chú cũ với lịch sử sửa đổi rõ ràng
                 new_note = f"{current_note} {note_append}".strip()
                 
                 with conn.session as s:
@@ -358,12 +363,12 @@ with tab4:
                     s.execute(sql, {"new_total": new_total, "new_note": new_note, "id": int(selected_id_adj)})
                     s.commit()
                     
-                st.success(f"🎉 Đã sửa tiền gốc thành {new_total:,.0f} ₫. Lịch sử đã được lưu vào cột Ghi chú!")
+                st.success(f"🎉 Đã sửa tiền gốc thành {new_total:,.0f} ₫. Lịch sử đã được cập nhật vào cột Ghi chú!")
                 st.rerun()
     else:
         st.info("Chưa có khoản nợ nào để sửa.")
 
-# ----- TAB 5: QUẢN LÝ VÀ XÓA SỔ NỢ (BẢO MẬT BẰNG MẬT KHẨU) -----
+# ----- TAB 5: QUẢN LÝ VÀ XÓA SỔ NỢ (BẢO MẬT BẰNG MẬT KHẨU ADMIN) -----
 with tab5:
     st.subheader("⚙️ Quản Lý & Xóa Dữ Liệu")
     
@@ -401,23 +406,23 @@ with tab5:
             st.success("🧹 Đã xóa sạch toàn bộ sổ nợ và giao dịch trên hệ thống!")
             st.rerun()
 
-    # 2. QUYỀN USER THƯỜNG: Bắt buộc nhập mật khẩu của sổ nợ mới được phép xóa
+    # 2. QUYỀN USER THƯỜNG: Bắt buộc nhập Mật khẩu Admin mới được phép xóa sổ của nhóm
     else:
-        st.warning("⚠️ **BẢO MẬT:** Để tránh xóa nhầm dữ liệu, bạn buộc phải **nhập lại mật khẩu của sổ này** mới được phép xóa lịch sử nợ.")
+        st.warning("⚠️ **BẢO MẬT TUYỆT ĐỐI:** Vì mật khẩu sổ nợ cả hai người đều biết, hệ thống yêu cầu phải **nhập Mật khẩu Admin** mới được phép xóa sạch lịch sử nợ của nhóm này.")
         
-        entered_pwd_to_reset = st.text_input("Nhập mật khẩu sổ nợ của bạn để xác nhận:", type="password", key="reset_pwd_input")
+        entered_admin_pwd = st.text_input("Nhập Mật khẩu Admin để xác nhận xóa:", type="password", key="admin_pwd_reset")
         confirm_code = st.text_input("Gõ chữ **`XOA`** vào ô dưới", placeholder="Nhập XOA...")
         
-        # Kiểm tra xem mật khẩu user vừa nhập có đúng với mật khẩu của nhóm hiện tại không
-        is_pwd_correct = False
-        if entered_pwd_to_reset:
-            check_pw_res = run_query("SELECT username FROM users WHERE username = :u AND password = :p", 
-                                     params={"u": st.session_state['username'], "p": entered_pwd_to_reset})
-            if not check_pw_res.empty:
-                is_pwd_correct = True
+        # Kiểm tra xem mật khẩu vừa nhập có đúng là mật khẩu của tài khoản Admin hệ thống không
+        is_admin_pwd_correct = False
+        if entered_admin_pwd:
+            check_admin = run_query("SELECT username FROM users WHERE role = 'admin' AND password = :p", 
+                                     params={"p": entered_admin_pwd})
+            if not check_admin.empty:
+                is_admin_pwd_correct = True
 
-        # Nút xóa chỉ bật khi: Nhập đúng mật khẩu VÀ gõ đúng chữ XOA
-        is_disabled = not (is_pwd_correct and confirm_code.strip().upper() == "XOA")
+        # Nút xóa chỉ bật khi: Nhập đúng mật khẩu Admin VÀ gõ đúng chữ XOA
+        is_disabled = not (is_admin_pwd_correct and confirm_code.strip().upper() == "XOA")
         
         if st.button("🔥 XÓA SỔ NỢ NHÓM NÀY", type="primary", disabled=is_disabled):
             with conn.session as s:
@@ -426,5 +431,5 @@ with tab5:
             st.success("🧹 Đã xóa sạch lịch sử nợ của nhóm bạn!")
             st.rerun()
         
-        if entered_pwd_to_reset and not is_pwd_correct:
-            st.error("❌ Mật khẩu bạn vừa nhập không đúng với mật khẩu của sổ nợ này!")
+        if entered_admin_pwd and not is_admin_pwd_correct:
+            st.error("❌ Mật khẩu Admin không chính xác!")
