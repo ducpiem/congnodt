@@ -308,7 +308,6 @@ with tab1:
         )
         
         st.write("---")
-        # PHẦN BẢNG NHẬT KÝ GIAO DỊCH HIỂN THỊ RIÊNG
         st.subheader("🔍 Nhật Ký Giao Dịch & Lịch Sử Trả / Sửa Tiền")
         st.info("Bảng dưới đây ghi lại chi tiết từng lần trả tiền lẻ cũng như lịch sử điều chỉnh tiền nợ để hai người dễ dàng rà soát.")
         
@@ -364,7 +363,7 @@ with tab2:
             else:
                 st.error("⚠️ Vui lòng nhập Nội dung và Số tiền lớn hơn 0.")
 
-# ----- TAB 3: TRẢ TIỀN (GHI NHẬN NỘI DUNG TỪNG LẦN TRẢ) -----
+# ----- TAB 3: TRẢ TIỀN -----
 with tab3:
     st.subheader("💳 Ghi Nhận Trả Tiền")
     st.info("Mỗi lần trả tiền (dù ít hay nhiều), bạn hãy ghi rõ nội dung/lý do để lưu vào Nhật ký giao dịch.")
@@ -391,11 +390,9 @@ with tab3:
                     actor = st.session_state['username']
                     
                     with conn.session as s:
-                        # 1. Cập nhật tổng số tiền đã trả
                         sql_update = text("UPDATE debts SET paid_amount = :new_paid WHERE id = :id")
                         s.execute(sql_update, {"new_paid": float(new_paid_total), "id": int(selected_id)})
                         
-                        # 2. Thêm một dòng nhật ký giao dịch riêng
                         sql_log = text("""
                             INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by)
                             VALUES (:debt_id, '💳 Trả tiền', :amount, :note, :created_by)
@@ -415,7 +412,7 @@ with tab3:
     else:
         st.info("Chưa có khoản nợ nào.")
 
-# ----- TAB 4: SỬA SAI (GHI NHẬN NỘI DUNG SỬA SAI VÀO NHẬT KÝ) -----
+# ----- TAB 4: SỬA SAI -----
 with tab4:
     st.subheader("✏️ Điều Chỉnh Khoản Nợ (Ghi Nhầm)")
     st.info("Dùng khi bạn lỡ nhập sai số tiền gốc (thừa hoặc thiếu). Hệ thống sẽ tự động ghi nhận lịch sử vào Nhật ký giao dịch.")
@@ -449,11 +446,9 @@ with tab4:
                     log_type_str = "🔴 Trừ tiền gốc"
                 
                 with conn.session as s:
-                    # 1. Cập nhật tiền gốc
                     sql_update = text("UPDATE debts SET total_amount = :new_total WHERE id = :id")
                     s.execute(sql_update, {"new_total": new_total, "id": int(selected_id_adj)})
                     
-                    # 2. Thêm vào Nhật ký giao dịch
                     sql_log = text("""
                         INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by)
                         VALUES (:debt_id, :log_type, :amount, :note, :created_by)
@@ -472,21 +467,59 @@ with tab4:
     else:
         st.info("Chưa có khoản nợ nào để sửa.")
 
-# ----- TAB 5: QUẢN LÝ VÀ XÓA SỔ NỢ (BẢO MẬT BẰNG MẬT KHẨU ADMIN) -----
+# ----- TAB 5: QUẢN LÝ VÀ XÓA DỮ LIỆU -----
 with tab5:
     st.subheader("⚙️ Quản Lý & Xóa Dữ Liệu")
     
-    # 1. QUYỀN ADMIN: Quản lý xóa toàn bộ hoặc từng Sổ Nợ
+    # 1. QUYỀN ADMIN
     if st.session_state['role'] == 'admin':
-        st.info("👑 **Quyền Admin:** Bạn có thể xóa từng Sổ Nợ cụ thể hoặc Reset toàn bộ hệ thống.")
+        st.info("👑 **Quyền Admin:** Bạn có thể chọn tích chọn xóa cụ thể các khoản nợ, xóa sổ nợ theo nhóm hoặc reset toàn bộ hệ thống.")
         
-        all_users = run_query("SELECT username FROM users WHERE role='user'")
-        
+        # MỤC MỚI THÊM: Xóa chi tiết các khoản nợ bằng ô tích chọn checkbox
+        st.markdown("### 🗑️ 1. Xóa Chi Tiết Các Khoản Nợ (Tích Chọn)")
+        all_debts_admin = run_query("SELECT id, group_id, title, total_amount, created_at FROM debts ORDER BY id DESC")
+        if not all_debts_admin.empty:
+            st.write("Tích chọn các khoản nợ bên dưới mà bạn muốn xóa:")
+            
+            # Tạo bảng hiển thị có cột checkbox để admin chọn
+            all_debts_admin['Chọn'] = False
+            edited_debts_df = st.data_editor(
+                all_debts_admin[["Chọn", "id", "group_id", "title", "total_amount"]],
+                column_config={
+                    "Chọn": st.column_config.CheckboxColumn("Xóa?", help="Tích chọn để xóa khoản này"),
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "group_id": st.column_config.TextColumn("Nhóm", width="small"),
+                    "title": st.column_config.TextColumn("Nội dung", width="large"),
+                    "total_amount": st.column_config.NumberColumn("Tổng tiền", format="%.0f ₫"),
+                },
+                disabled=["id", "group_id", "title", "total_amount"],
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            # Lọc ra các ID được tích chọn
+            selected_ids_to_delete = edited_debts_df[edited_debts_df["Chọn"] == True]["id"].tolist()
+            
+            if selected_ids_to_delete:
+                st.warning(f"⚠️ Bạn đã chọn **{len(selected_ids_to_delete)}** khoản nợ để xóa (IDs: {selected_ids_to_delete})")
+                if st.button("🔥 XÓA CÁC KHOẢN NỢ ĐÃ CHỌN", type="primary"):
+                    with conn.session as s:
+                        # Xóa nhật ký liên quan trước để tránh lỗi khóa ngoại (foreign key) nếu có, hoặc xóa trực tiếp
+                        for did in selected_ids_to_delete:
+                            s.execute(text("DELETE FROM debt_logs WHERE debt_id = :did"), {"did": int(did)})
+                            s.execute(text("DELETE FROM debts WHERE id = :did"), {"did": int(did)})
+                        s.commit()
+                    st.success(f"🧹 Đã xóa thành công {len(selected_ids_to_delete)} khoản nợ đã chọn!")
+                    st.rerun()
+        else:
+            st.caption("Không có khoản nợ nào trong hệ thống.")
+
         st.write("---")
-        st.markdown("### 🗑️ 1. Xóa Vĩnh Viễn 1 Sổ Nợ Cụ Thể")
+        st.markdown("### 🗑️ 2. Xóa Vĩnh Viễn 1 Sổ Nợ Cụ Thể")
+        all_users = run_query("SELECT username FROM users WHERE role='user'")
         if not all_users.empty:
             group_to_delete = st.selectbox("Chọn sổ nợ (Tên cặp) muốn xóa hoàn toàn:", all_users['username'].tolist())
-            confirm_del_single = st.text_input(f"Gõ đúng chữ **`XOASO`** để xác nhận xóa sổ [{group_to_delete}]:")
+            confirm_del_single = st.text_input(f"Gõ đúng chữ **`XOASO`** để xác nhận xóa sổ [{group_to_delete}]:", key="del_single_box")
             
             if st.button(f"🔥 XÓA VĨNH VIỄN SỔ [{group_to_delete}]", type="primary", disabled=(confirm_del_single.strip().upper() != "XOASO")):
                 with conn.session as s:
@@ -500,8 +533,8 @@ with tab5:
             st.write("Chưa có sổ nợ nào trong hệ thống.")
             
         st.write("---")
-        st.markdown("### 💥 2. Xóa Sạch Tất Cả Các Sổ Nợ & Lịch Sử (Reset Hệ Thống)")
-        confirm_all = st.text_input("Gõ chữ **`XOAALL`** để xóa toàn bộ tất cả sổ nợ trên web:", placeholder="Nhập XOAALL...")
+        st.markdown("### 💥 3. Xóa Sạch Tất Cả Các Sổ Nợ & Lịch Sử (Reset Hệ Thống)")
+        confirm_all = st.text_input("Gõ chữ **`XOAALL`** để xóa toàn bộ tất cả sổ nợ trên web:", placeholder="Nhập XOAALL...", key="xoa_all_box")
         
         if st.button("🔥 RESET TOÀN BỘ HỆ THỐNG", type="primary", disabled=(confirm_all.strip().upper() != "XOAALL")):
             with conn.session as s:
@@ -512,14 +545,13 @@ with tab5:
             st.success("🧹 Đã xóa sạch toàn bộ sổ nợ và giao dịch trên hệ thống!")
             st.rerun()
 
-    # 2. QUYỀN USER THƯỜNG: Bắt buộc nhập Mật khẩu Admin mới được phép xóa sổ của nhóm
+    # 2. QUYỀN USER THƯỜNG
     else:
         st.warning("⚠️ **BẢO MẬT TUYỆT ĐỐI:** Để tránh xóa nhầm dữ liệu, hệ thống yêu cầu phải **nhập Mật khẩu Admin** mới được phép xóa sạch lịch sử nợ của nhóm này.")
         
         entered_admin_pwd = st.text_input("Nhập Mật khẩu Admin để xác nhận xóa:", type="password", key="admin_pwd_reset")
-        confirm_code = st.text_input("Gõ chữ **`XOA`** vào ô dưới", placeholder="Nhập XOA...")
+        confirm_code = st.text_input("Gõ chữ **`XOA`** vào ô dưới", placeholder="Nhập XOA...", key="xoa_user_box")
         
-        # Kiểm tra xem mật khẩu vừa nhập có đúng là mật khẩu của tài khoản Admin hệ thống không
         is_admin_pwd_correct = False
         if entered_admin_pwd:
             check_admin = run_query("SELECT username FROM users WHERE role = 'admin' AND password = :p", 
@@ -527,7 +559,6 @@ with tab5:
             if not check_admin.empty:
                 is_admin_pwd_correct = True
 
-        # Nút xóa chỉ bật khi: Nhập đúng mật khẩu Admin VÀ gõ đúng chữ XOA
         is_disabled = not (is_admin_pwd_correct and confirm_code.strip().upper() == "XOA")
         
         if st.button("🔥 XÓA SỔ NỢ NHÓM NÀY", type="primary", disabled=is_disabled):
