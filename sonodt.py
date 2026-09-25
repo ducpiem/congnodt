@@ -36,44 +36,67 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. Khởi tạo CSDL ---
+# --- 3. Khởi tạo CSDL & Xử lý kết nối ngầm ---
 conn = st.connection("neon", type="sql")
 
-def run_query(sql, params=None):
-    with conn.engine.connect() as c:
-        result = c.execute(text(sql), params or {})
-        keys = result.keys()
-        data = result.fetchall()
-        return pd.DataFrame(data, columns=keys) if data else pd.DataFrame(columns=keys)
+# Bật Pre-ping chống timeout khi ngâm trang lâu
+try:
+    conn.engine.pool._pre_ping = True
+except Exception:
+    pass
 
+def execute_db(sql, params=None):
+    """Hàm thực thi ghi dữ liệu an toàn, tự khôi phục nếu đứt kết nối"""
+    try:
+        with conn.engine.begin() as s:
+            s.execute(text(sql), params or {})
+    except Exception:
+        conn.engine.dispose()
+        with conn.engine.begin() as s:
+            s.execute(text(sql), params or {})
+
+def run_query(sql, params=None):
+    """Hàm đọc dữ liệu an toàn"""
+    try:
+        with conn.engine.connect() as c:
+            result = c.execute(text(sql), params or {})
+            keys = result.keys()
+            data = result.fetchall()
+            return pd.DataFrame(data, columns=keys) if data else pd.DataFrame(columns=keys)
+    except Exception:
+        conn.engine.dispose()
+        with conn.engine.connect() as c:
+            result = c.execute(text(sql), params or {})
+            keys = result.keys()
+            data = result.fetchall()
+            return pd.DataFrame(data, columns=keys) if data else pd.DataFrame(columns=keys)
+
+@st.cache_resource
 def init_db():
-    with conn.session as s:
-        # DB Users & Debts
-        s.execute(text("CREATE TABLE IF NOT EXISTS users (username VARCHAR(50) PRIMARY KEY, password VARCHAR(50) NOT NULL, role VARCHAR(20) NOT NULL, group_id VARCHAR(50) NOT NULL);"))
-        s.execute(text("CREATE TABLE IF NOT EXISTS debts (id SERIAL PRIMARY KEY, title TEXT NOT NULL, borrower VARCHAR(50), lender VARCHAR(50), total_amount NUMERIC DEFAULT 0, paid_amount NUMERIC DEFAULT 0, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, group_id VARCHAR(50) DEFAULT 'Mặc định');"))
-        s.execute(text("CREATE TABLE IF NOT EXISTS debt_logs (id SERIAL PRIMARY KEY, debt_id INT NOT NULL, log_type VARCHAR(50) NOT NULL, amount NUMERIC NOT NULL, note TEXT, created_by VARCHAR(50), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"))
-        # DB Chi tiêu
-        s.execute(text("""
-            CREATE TABLE IF NOT EXISTS expenses (
-                id SERIAL PRIMARY KEY,
-                title TEXT NOT NULL,
-                amount NUMERIC DEFAULT 0,
-                category VARCHAR(50),
-                paid_by VARCHAR(50),
-                note TEXT,
-                expense_date DATE DEFAULT CURRENT_DATE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                group_id VARCHAR(50) NOT NULL
-            );
-        """))
-        # Kiểm tra Admin
-        count = s.execute(text("SELECT COUNT(*) FROM users WHERE role='admin';")).scalar()
-        if count == 0: s.execute(text("INSERT INTO users (username, password, role, group_id) VALUES ('admin', 'admin123', 'admin', 'ALL')"))
-        s.commit()
+    """Chỉ chạy 1 lần duy nhất khi khởi động ứng dụng"""
+    execute_db("CREATE TABLE IF NOT EXISTS users (username VARCHAR(50) PRIMARY KEY, password VARCHAR(50) NOT NULL, role VARCHAR(20) NOT NULL, group_id VARCHAR(50) NOT NULL);")
+    execute_db("CREATE TABLE IF NOT EXISTS debts (id SERIAL PRIMARY KEY, title TEXT NOT NULL, borrower VARCHAR(50), lender VARCHAR(50), total_amount NUMERIC DEFAULT 0, paid_amount NUMERIC DEFAULT 0, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, group_id VARCHAR(50) DEFAULT 'Mặc định');")
+    execute_db("CREATE TABLE IF NOT EXISTS debt_logs (id SERIAL PRIMARY KEY, debt_id INT NOT NULL, log_type VARCHAR(50) NOT NULL, amount NUMERIC NOT NULL, note TEXT, created_by VARCHAR(50), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+    execute_db("""
+        CREATE TABLE IF NOT EXISTS expenses (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            amount NUMERIC DEFAULT 0,
+            category VARCHAR(50),
+            paid_by VARCHAR(50),
+            note TEXT,
+            expense_date DATE DEFAULT CURRENT_DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            group_id VARCHAR(50) NOT NULL
+        );
+    """)
+    check_admin = run_query("SELECT COUNT(*) as count FROM users WHERE role='admin'")
+    if check_admin.empty or check_admin.iloc[0]['count'] == 0:
+        execute_db("INSERT INTO users (username, password, role, group_id) VALUES ('admin', 'admin123', 'admin', 'ALL')")
 
 init_db()
 
-# --- Các hàm Data (Đã update lọc theo nhóm) ---
+# --- Các hàm Lấy Data ---
 def fetch_debts(view_group):
     if view_group == "ALL":
         return run_query("SELECT id, title, borrower, lender, total_amount, paid_amount, note, created_at, group_id FROM debts ORDER BY id DESC")
@@ -90,7 +113,8 @@ def fetch_expenses(view_group):
     return run_query("SELECT id, title, amount, category, paid_by, note, expense_date, group_id FROM expenses WHERE group_id = :g ORDER BY expense_date DESC, id DESC", params={"g": view_group})
 
 # --- 4. GIAO DIỆN ĐĂNG NHẬP ---
-if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+if 'logged_in' not in st.session_state: 
+    st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
     st.markdown('<div class="main-title">🚪 CỔNG QUẢN LÝ TÀI CHÍNH</div>', unsafe_allow_html=True)
@@ -108,8 +132,10 @@ if not st.session_state['logged_in']:
                     if not res.empty:
                         st.session_state.update({'logged_in': True, 'username': selected_group, 'role': res.iloc[0]['role'], 'group_id': res.iloc[0]['group_id']})
                         st.rerun()
-                    else: st.error("Sai mật khẩu!")
-            else: st.info("Chưa có sổ nào. Hãy tạo sổ mới 👉")
+                    else: 
+                        st.error("Sai mật khẩu!")
+            else: 
+                st.info("Chưa có sổ nào. Hãy tạo sổ mới 👉")
             
             st.write("---")
             with st.expander("👑 Đăng nhập Admin"):
@@ -120,7 +146,8 @@ if not st.session_state['logged_in']:
                     if not res_ad.empty:
                         st.session_state.update({'logged_in': True, 'username': admin_u, 'role': res_ad.iloc[0]['role'], 'group_id': res_ad.iloc[0]['group_id']})
                         st.rerun()
-                    else: st.error("Sai mật khẩu Admin!")
+                    else: 
+                        st.error("Sai mật khẩu Admin!")
 
     with col2:
         with st.container(border=True):
@@ -133,12 +160,11 @@ if not st.session_state['logged_in']:
                         if not run_query("SELECT username FROM users WHERE username = :u", params={"u": new_group_name}).empty:
                             st.error("Tên sổ này đã tồn tại!")
                         else:
-                            with conn.session as s:
-                                s.execute(text("INSERT INTO users (username, password, role, group_id) VALUES (:u, :p, 'user', :g)"), {"u": new_group_name, "p": new_group_pwd, "g": new_group_name})
-                                s.commit()
+                            execute_db("INSERT INTO users (username, password, role, group_id) VALUES (:u, :p, 'user', :g)", {"u": new_group_name, "p": new_group_pwd, "g": new_group_name})
                             st.session_state.update({'logged_in': True, 'username': new_group_name, 'role': 'user', 'group_id': new_group_name})
                             st.rerun()
-                    else: st.warning("Nhập đủ thông tin!")
+                    else: 
+                        st.warning("Nhập đủ thông tin!")
     st.stop()
 
 # --- 5. GIAO DIỆN CHÍNH ---
@@ -156,7 +182,8 @@ else:
     current_view_group = st.session_state['group_id']
 
 st.sidebar.write("---")
-if st.sidebar.button("🔄 Làm mới dữ liệu", use_container_width=True): st.rerun()
+if st.sidebar.button("🔄 Làm mới dữ liệu", use_container_width=True): 
+    st.rerun()
 st.sidebar.write("---")
 
 app_mode = st.sidebar.radio("📌 CHỌN CHỨC NĂNG:", ["💸 Sổ Nợ Nần", "🛒 Sổ Chi Tiêu"])
@@ -200,7 +227,8 @@ if app_mode == "💸 Sổ Nợ Nần":
             if not logs_df.empty:
                 logs_df['Thời gian'] = logs_df['created_at'].apply(lambda dt: pd.to_datetime(dt).strftime('%d/%m/%Y %H:%M') if pd.notna(dt) else "")
                 st.dataframe(logs_df[["Thời gian", "group_id", "title", "log_type", "amount", "note", "created_by"]], hide_index=True, use_container_width=True)
-        else: st.info("Sổ nợ trống.")
+        else: 
+            st.info("Sổ nợ trống.")
 
     with tab2:
         if current_view_group == "ALL" and st.session_state['role'] == 'admin':
@@ -215,11 +243,10 @@ if app_mode == "💸 Sổ Nợ Nần":
                 note = st.text_area("Ghi chú")
                 if st.form_submit_button("💾 LƯU KHOẢN NỢ", type="primary"):
                     if title and total_amount > 0:
-                        with conn.session as s:
-                            s.execute(text("INSERT INTO debts (title, borrower, lender, total_amount, paid_amount, note, group_id) VALUES (:t, :b, :l, :a, 0, :n, :g)"), {"t": title, "b": borrower, "l": lender, "a": float(total_amount), "n": note, "g": current_view_group})
-                            s.commit()
+                        execute_db("INSERT INTO debts (title, borrower, lender, total_amount, paid_amount, note, group_id) VALUES (:t, :b, :l, :a, 0, :n, :g)", {"t": title, "b": borrower, "l": lender, "a": float(total_amount), "n": note, "g": current_view_group})
                         st.success("Đã ghi nợ!"); st.rerun()
-                    else: st.error("Nhập đủ Nội dung và Số tiền!")
+                    else: 
+                        st.error("Nhập đủ Nội dung và Số tiền!")
 
     with tab3:
         if not df.empty and not df[df["remaining"] > 0].empty:
@@ -231,12 +258,11 @@ if app_mode == "💸 Sổ Nợ Nần":
             pay_note = st.text_input("Lý do trả (Bắt buộc)")
             if st.button("✅ XÁC NHẬN TRẢ", type="primary"):
                 if pay_note:
-                    with conn.session as s:
-                        s.execute(text("UPDATE debts SET paid_amount = paid_amount + :p WHERE id = :id"), {"p": pay_amt, "id": sel_id})
-                        s.execute(text("INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by) VALUES (:id, '💳 Trả tiền', :amt, :n, :c)"), {"id": sel_id, "amt": pay_amt, "n": pay_note, "c": st.session_state['username']})
-                        s.commit()
+                    execute_db("UPDATE debts SET paid_amount = paid_amount + :p WHERE id = :id", {"p": pay_amt, "id": sel_id})
+                    execute_db("INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by) VALUES (:id, '💳 Trả tiền', :amt, :n, :c)", {"id": sel_id, "amt": pay_amt, "n": pay_note, "c": st.session_state['username']})
                     st.success("Đã lưu!"); st.rerun()
-                else: st.error("Vui lòng nhập lý do!")
+                else: 
+                    st.error("Vui lòng nhập lý do!")
 
     with tab4:
         if not df.empty:
@@ -250,12 +276,11 @@ if app_mode == "💸 Sổ Nợ Nần":
                     curr_amt = float(df[df["id"] == sel_id].iloc[0]["total_amount"])
                     new_amt = curr_amt + adj_amt if "Cộng" in adj_type else max(0, curr_amt - adj_amt)
                     log_str = "🟢 Cộng tiền gốc" if "Cộng" in adj_type else "🔴 Trừ tiền gốc"
-                    with conn.session as s:
-                        s.execute(text("UPDATE debts SET total_amount = :na WHERE id = :id"), {"na": new_amt, "id": sel_id})
-                        s.execute(text("INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by) VALUES (:id, :lt, :a, :n, :c)"), {"id": sel_id, "lt": log_str, "a": adj_amt, "n": adj_note, "c": st.session_state['username']})
-                        s.commit()
+                    execute_db("UPDATE debts SET total_amount = :na WHERE id = :id", {"na": new_amt, "id": sel_id})
+                    execute_db("INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by) VALUES (:id, :lt, :a, :n, :c)", {"id": sel_id, "lt": log_str, "a": adj_amt, "n": adj_note, "c": st.session_state['username']})
                     st.success("Đã sửa!"); st.rerun()
-                else: st.error("Nhập lý do!")
+                else: 
+                    st.error("Nhập lý do!")
 
     with tab5:
         st.subheader("⚙️ Quản Lý & Xóa Dữ Liệu")
@@ -285,11 +310,9 @@ if app_mode == "💸 Sổ Nợ Nần":
                 
                 if sel_ids:
                     if st.button("🔥 XÓA CÁC KHOẢN NỢ ĐÃ CHỌN", type="primary"):
-                        with conn.session as s:
-                            for did in sel_ids:
-                                s.execute(text("DELETE FROM debt_logs WHERE debt_id = :did"), {"did": int(did)})
-                                s.execute(text("DELETE FROM debts WHERE id = :did"), {"did": int(did)})
-                            s.commit()
+                        for did in sel_ids:
+                            execute_db("DELETE FROM debt_logs WHERE debt_id = :did", {"did": int(did)})
+                            execute_db("DELETE FROM debts WHERE id = :did", {"did": int(did)})
                         st.success(f"🧹 Đã xóa thành công {len(sel_ids)} khoản nợ!"); st.rerun()
             else:
                 st.caption("Không có khoản nợ nào trong sổ này.")
@@ -302,11 +325,9 @@ if app_mode == "💸 Sổ Nợ Nần":
                 confirm_del_single = st.text_input(f"Gõ đúng chữ **`XOASO`** để xác nhận xóa sổ [{group_to_delete}]:", key="del_single_box")
                 
                 if st.button(f"🔥 XÓA VĨNH VIỄN SỔ [{group_to_delete}]", type="primary", disabled=(confirm_del_single.strip().upper() != "XOASO")):
-                    with conn.session as s:
-                        s.execute(text("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)"), {"g": group_to_delete})
-                        s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": group_to_delete})
-                        s.execute(text("DELETE FROM users WHERE username = :u AND role = 'user'"), {"u": group_to_delete})
-                        s.commit()
+                    execute_db("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)", {"g": group_to_delete})
+                    execute_db("DELETE FROM debts WHERE group_id = :g", {"g": group_to_delete})
+                    execute_db("DELETE FROM users WHERE username = :u AND role = 'user'", {"u": group_to_delete})
                     st.success(f"🧹 Đã xóa vĩnh viễn sổ nợ [{group_to_delete}]!"); st.rerun()
             else:
                 st.write("Chưa có sổ nợ nào trong hệ thống.")
@@ -316,11 +337,9 @@ if app_mode == "💸 Sổ Nợ Nần":
             confirm_all = st.text_input("Gõ chữ **`XOAALL`** để xóa toàn bộ tất cả sổ nợ trên web:", key="xoa_all_box")
             
             if st.button("🔥 RESET TOÀN BỘ HỆ THỐNG", type="primary", disabled=(confirm_all.strip().upper() != "XOAALL")):
-                with conn.session as s:
-                    s.execute(text("TRUNCATE TABLE debt_logs RESTART IDENTITY;"))
-                    s.execute(text("TRUNCATE TABLE debts RESTART IDENTITY CASCADE;"))
-                    s.execute(text("DELETE FROM users WHERE role = 'user';"))
-                    s.commit()
+                execute_db("TRUNCATE TABLE debt_logs RESTART IDENTITY;")
+                execute_db("TRUNCATE TABLE debts RESTART IDENTITY CASCADE;")
+                execute_db("DELETE FROM users WHERE role = 'user';")
                 st.success("🧹 Đã xóa sạch toàn bộ sổ nợ và giao dịch!"); st.rerun()
 
         else:
@@ -337,10 +356,8 @@ if app_mode == "💸 Sổ Nợ Nần":
             is_disabled = not (is_admin_pwd_correct and confirm_code.strip().upper() == "XOA")
             
             if st.button("🔥 XÓA SỔ NỢ NHÓM NÀY", type="primary", disabled=is_disabled):
-                with conn.session as s:
-                    s.execute(text("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)"), {"g": st.session_state['group_id']})
-                    s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": st.session_state['group_id']})
-                    s.commit()
+                execute_db("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)", {"g": st.session_state['group_id']})
+                execute_db("DELETE FROM debts WHERE group_id = :g", {"g": st.session_state['group_id']})
                 st.success("🧹 Đã xóa sạch lịch sử nợ của nhóm bạn!"); st.rerun()
             
             if entered_admin_pwd and not is_admin_pwd_correct:
@@ -400,15 +417,13 @@ elif app_mode == "🛒 Sổ Chi Tiêu":
                 
                 if st.form_submit_button("🛒 LƯU KHOẢN CHI", type="primary"):
                     if exp_title and exp_amount > 0:
-                        with conn.session as s:
-                            s.execute(text("""
-                                INSERT INTO expenses (title, amount, category, paid_by, note, expense_date, group_id) 
-                                VALUES (:t, :a, :c, :p, :n, :d, :g)
-                            """), {
-                                "t": exp_title, "a": float(exp_amount), "c": exp_cat, 
-                                "p": exp_paid_by, "n": exp_note, "d": exp_date, "g": current_view_group
-                            })
-                            s.commit()
+                        execute_db("""
+                            INSERT INTO expenses (title, amount, category, paid_by, note, expense_date, group_id) 
+                            VALUES (:t, :a, :c, :p, :n, :d, :g)
+                        """, {
+                            "t": exp_title, "a": float(exp_amount), "c": exp_cat, 
+                            "p": exp_paid_by, "n": exp_note, "d": exp_date, "g": current_view_group
+                        })
                         st.success("Đã ghi nhận khoản chi thành công!"); st.rerun()
                     else:
                         st.error("⚠️ Vui lòng nhập Tên khoản chi và Số tiền lớn hơn 0.")
@@ -427,10 +442,8 @@ elif app_mode == "🛒 Sổ Chi Tiêu":
                 
                 if sel_exp_ids:
                     if st.button("🔥 XÓA CÁC KHOẢN CHI ĐÃ CHỌN", type="primary"):
-                        with conn.session as s:
-                            for eid in sel_exp_ids:
-                                s.execute(text("DELETE FROM expenses WHERE id = :id"), {"id": int(eid)})
-                            s.commit()
+                        for eid in sel_exp_ids:
+                            execute_db("DELETE FROM expenses WHERE id = :id", {"id": int(eid)})
                         st.success(f"Đã xóa {len(sel_exp_ids)} khoản chi!"); st.rerun()
             else:
                 st.caption("Chưa có dữ liệu.")
