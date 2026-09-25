@@ -67,14 +67,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. Khởi tạo CSDL & Hàm truy vấn Real-time (Bỏ Cache) ---
+# --- 3. Khởi tạo CSDL & Hàm truy vấn Real-time ---
 conn = st.connection("neon", type="sql")
 
 def run_query(sql, params=None):
-    """Hàm chạy SQL trực tiếp, bỏ qua bộ nhớ đệm của Streamlit để khắc phục delay data"""
     with conn.session as s:
         result = s.execute(text(sql), params or {})
-        # Lấy dữ liệu và trả về DataFrame
         keys = result.keys()
         data = result.fetchall()
         return pd.DataFrame(data, columns=keys) if data else pd.DataFrame(columns=keys)
@@ -90,19 +88,14 @@ def init_db():
             );
         """))
         s.execute(text("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debts' AND column_name='group_id') THEN
-                    ALTER TABLE debts ADD COLUMN group_id VARCHAR(50) DEFAULT 'Mặc định';
-                END IF;
-            END $$;
+            DO $$             BEGIN                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debts' AND column_name='group_id') THEN                     ALTER TABLE debts ADD COLUMN group_id VARCHAR(50) DEFAULT 'Mặc định';                 END IF;             END $$;
         """))
-        # Tạo Admin (Pass: admin123)
+        # Tạo / Cập nhật lại mật khẩu Admin mặc định là admin123
         count = s.execute(text("SELECT COUNT(*) FROM users WHERE role='admin';")).scalar()
         if count == 0:
             s.execute(text("INSERT INTO users (username, password, role, group_id) VALUES ('admin', 'admin123', 'admin', 'ALL')"))
-            # Thêm dòng này để ép đổi mật khẩu Admin thành admin123
-        s.execute(text("UPDATE users SET password = 'admin123' WHERE username = 'admin';"))
+        else:
+            s.execute(text("UPDATE users SET password = 'admin123' WHERE username = 'admin';"))
         s.commit()
 
 init_db()
@@ -121,7 +114,6 @@ if not st.session_state['logged_in']:
     st.markdown('<div class="main-title">🚪 CỔNG VÀO SỔ GHI NỢ</div>', unsafe_allow_html=True)
     st.write("---")
     
-    # Chia 2 cột cách đều nhau (gap="large")
     col1, col2 = st.columns(2, gap="large")
     
     # Khối 1: Danh sách các sổ nợ đã tạo
@@ -149,10 +141,10 @@ if not st.session_state['logged_in']:
                 st.info("Chưa có sổ nợ nào. Hãy tạo sổ mới ở bên cạnh 👉")
                 
             st.write("---")
-            # Khối Admin (Pass mặc định: admin123)
+            # Khối Admin
             with st.expander("👑 Đăng nhập Admin (Full quyền)"):
-                admin_u = st.text_input("Tài khoản Admin ", key="ad_u")
-                admin_p = st.text_input("Mật khẩu Admin ", type="password", key="ad_p")
+                admin_u = st.text_input("Tài khoản Admin", value="admin", key="ad_u")
+                admin_p = st.text_input("Mật khẩu Admin", type="password", key="ad_p")
                 if st.button("Đăng nhập Admin", use_container_width=True):
                     res_ad = run_query("SELECT role, group_id FROM users WHERE username = :u AND password = :p AND role='admin'", 
                                      params={"u": admin_u, "p": admin_p})
@@ -165,7 +157,7 @@ if not st.session_state['logged_in']:
                     else:
                         st.error("Sai tài khoản hoặc mật khẩu Admin!")
 
-    # Khối 2: Tạo khoản nợ / Tạo sổ mới
+    # Khối 2: Tạo sổ nợ mới
     with col2:
         with st.container(border=True):
             st.subheader("➕ Tạo Sổ Nợ Mới")
@@ -176,7 +168,6 @@ if not st.session_state['logged_in']:
                 
                 if st.form_submit_button("Tạo Sổ Nợ & Đăng Nhập", type="primary", use_container_width=True):
                     if new_group_name and new_group_pwd:
-                        # Kiểm tra trùng tên bằng Real-time query
                         check_exist = run_query("SELECT username FROM users WHERE username = :u", params={"u": new_group_name})
                         if not check_exist.empty:
                             st.error("Tên sổ nợ này đã tồn tại, vui lòng chọn tên khác!")
@@ -186,7 +177,6 @@ if not st.session_state['logged_in']:
                                           {"u": new_group_name, "p": new_group_pwd, "g": new_group_name})
                                 s.commit()
                             st.success("Tạo sổ thành công! Đang tự động đăng nhập...")
-                            # Đăng nhập luôn
                             st.session_state['logged_in'] = True
                             st.session_state['username'] = new_group_name
                             st.session_state['role'] = 'user'
@@ -197,17 +187,16 @@ if not st.session_state['logged_in']:
 
     st.stop()
 
-
-# --- 5. GIAO DIỆN CHÍNH (Chỉ hiện khi đã đăng nhập thành công) ---
-st.sidebar.markdown(f"👤 **{st.session_state['username']}**")
-st.sidebar.markdown(f"🏷️ Nhóm: **{st.session_state['group_id']}**")
+# --- 5. GIAO DIỆN CHÍNH (Sau khi đăng nhập) ---
+st.sidebar.markdown(f"👤 Tài khoản: **{st.session_state['username']}**")
+st.sidebar.markdown(f"🏷️ Quyền: **{st.session_state['role'].upper()}**")
 if st.sidebar.button("Đăng xuất"):
     st.session_state.clear()
     st.rerun()
 
 st.markdown('<div class="main-title">💸 SỔ GHI NỢ DÙNG CHUNG</div>', unsafe_allow_html=True)
 if st.session_state['role'] == 'admin':
-    st.markdown('<div class="sub-title">Chế độ Admin: Xem toàn bộ dữ liệu</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Chế độ Admin: Xem và quản lý toàn bộ hệ thống</div>', unsafe_allow_html=True)
 else:
     st.markdown(f'<div class="sub-title">Không gian riêng của cặp: {st.session_state["group_id"]}</div>', unsafe_allow_html=True)
 
@@ -241,7 +230,7 @@ if not df.empty:
     """, unsafe_allow_html=True)
 
 # --- Các Tab chức năng ---
-tab1, tab2, tab3, tab4 = st.tabs(["📋 Danh sách", "➕ Thêm mới", "💳 Trả tiền", "⚙️ Reset"])
+tab1, tab2, tab3, tab4 = st.tabs(["📋 Danh sách", "➕ Thêm mới", "💳 Trả tiền", "⚙️ Reset / Quản lý"])
 
 with tab1:
     st.subheader("📋 Chi Tiết Các Khoản Nợ")
@@ -334,20 +323,57 @@ with tab3:
         else:
             st.success("🎉 Wow! Không còn ai nợ ai cả.")
 
+# ----- TAB 4: QUẢN LÝ VÀ XÓA SỔ NỢ -----
 with tab4:
-    st.subheader("⚙️ Chốt Sổ / Xóa Dữ Liệu")
-    st.warning("**CẢNH BÁO:** Thao tác này sẽ xóa sạch danh sách nợ. User thường chỉ xóa được nợ của nhóm mình, Admin xóa toàn bộ.")
+    st.subheader("⚙️ Quản Lý & Xóa Dữ Liệu")
     
-    confirm_code = st.text_input("Gõ chữ XOA vào ô dưới để mở khóa nút xóa", placeholder="Nhập XOA...")
-    is_disabled = confirm_code.strip().upper() != "XOA"
-    
-    if st.button("🔥 XÓA SỔ NỢ", type="primary", disabled=is_disabled):
-        with conn.session as s:
-            if st.session_state['role'] == 'admin':
+    # 1. QUYỀN ADMIN: Quản lý xóa toàn bộ hoặc từng Sổ Nợ
+    if st.session_state['role'] == 'admin':
+        st.info("👑 **Quyền Admin:** Bạn có thể xóa từng Sổ Nợ cụ thể hoặc Reset toàn bộ hệ thống.")
+        
+        all_users = run_query("SELECT username FROM users WHERE role='user'")
+        
+        # Quyền 1: Xóa 1 Sổ Nợ chỉ định (Xóa cả nhóm + Lịch sử nợ)
+        st.write("---")
+        st.markdown("### 🗑️ 1. Xóa Vĩnh Viễn 1 Sổ Nợ Cụ Thể")
+        if not all_users.empty:
+            group_to_delete = st.selectbox("Chọn sổ nợ (Tên cặp) muốn xóa hoàn toàn:", all_users['username'].tolist())
+            confirm_del_single = st.text_input(f"Gõ đúng chữ **`XOASO`** để xác nhận xóa sổ [{group_to_delete}]:")
+            
+            if st.button(f"🔥 XÓA VĨNH VIỄN SỔ [{group_to_delete}]", type="primary", disabled=(confirm_del_single.strip().upper() != "XOASO")):
+                with conn.session as s:
+                    # Xóa tất cả các giao dịch của sổ này
+                    s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": group_to_delete})
+                    # Xóa tài khoản/tên sổ khỏi danh sách
+                    s.execute(text("DELETE FROM users WHERE username = :u AND role = 'user'"), {"u": group_to_delete})
+                    s.commit()
+                st.success(f"🧹 Đã xóa vĩnh viễn sổ nợ [{group_to_delete}] và toàn bộ lịch sử giao dịch!")
+                st.rerun()
+        else:
+            st.write("Chưa có sổ nợ nào trong hệ thống.")
+            
+        # Quyền 2: Xóa SẠCH TOÀN BỘ hệ thống
+        st.write("---")
+        st.markdown("### 💥 2. Xóa Sạch Tất Cả Các Sổ Nợ & Lịch Sử (Reset Hệ Thống)")
+        confirm_all = st.text_input("Gõ chữ **`XOAALL`** để xóa toàn bộ tất cả sổ nợ trên web:", placeholder="Nhập XOAALL...")
+        
+        if st.button("🔥 RESET TOÀN BỘ HỆ THỐNG", type="primary", disabled=(confirm_all.strip().upper() != "XOAALL")):
+            with conn.session as s:
                 s.execute(text("TRUNCATE TABLE debts RESTART IDENTITY;"))
-            else:
-                sql = text("DELETE FROM debts WHERE group_id = :g")
-                s.execute(sql, {"g": st.session_state['group_id']})
-            s.commit()
-        st.success("🧹 Đã làm sạch sổ nợ thành công!")
-        st.rerun()
+                s.execute(text("DELETE FROM users WHERE role = 'user';"))
+                s.commit()
+            st.success("🧹 Đã xóa sạch toàn bộ sổ nợ và giao dịch trên hệ thống!")
+            st.rerun()
+
+    # 2. QUYỀN USER THƯỜNG: Chỉ xóa được dữ liệu giao dịch trong nhóm mình
+    else:
+        st.warning("**CẢNH BÁO:** Thao tác này sẽ xóa sạch danh sách nợ của nhóm bạn. Tên sổ nợ vẫn được giữ nguyên.")
+        confirm_code = st.text_input("Gõ chữ XOA vào ô dưới để mở khóa nút xóa", placeholder="Nhập XOA...")
+        is_disabled = confirm_code.strip().upper() != "XOA"
+        
+        if st.button("🔥 XÓA SỔ NỢ NHÓM NÀY", type="primary", disabled=is_disabled):
+            with conn.session as s:
+                s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": st.session_state['group_id']})
+                s.commit()
+            st.success("🧹 Đã xóa sạch lịch sử nợ của nhóm bạn!")
+            st.rerun()
