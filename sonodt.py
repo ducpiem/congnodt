@@ -52,7 +52,7 @@ def init_db():
         s.execute(text("CREATE TABLE IF NOT EXISTS users (username VARCHAR(50) PRIMARY KEY, password VARCHAR(50) NOT NULL, role VARCHAR(20) NOT NULL, group_id VARCHAR(50) NOT NULL);"))
         s.execute(text("CREATE TABLE IF NOT EXISTS debts (id SERIAL PRIMARY KEY, title TEXT NOT NULL, borrower VARCHAR(50), lender VARCHAR(50), total_amount NUMERIC DEFAULT 0, paid_amount NUMERIC DEFAULT 0, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, group_id VARCHAR(50) DEFAULT 'Mặc định');"))
         s.execute(text("CREATE TABLE IF NOT EXISTS debt_logs (id SERIAL PRIMARY KEY, debt_id INT NOT NULL, log_type VARCHAR(50) NOT NULL, amount NUMERIC NOT NULL, note TEXT, created_by VARCHAR(50), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"))
-        # DB Chi tiêu mới
+        # DB Chi tiêu
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS expenses (
                 id SERIAL PRIMARY KEY,
@@ -66,8 +66,7 @@ def init_db():
                 group_id VARCHAR(50) NOT NULL
             );
         """))
-        
-        # Tạo Admin
+        # Kiểm tra Admin
         count = s.execute(text("SELECT COUNT(*) FROM users WHERE role='admin';")).scalar()
         if count == 0: s.execute(text("INSERT INTO users (username, password, role, group_id) VALUES ('admin', 'admin123', 'admin', 'ALL')"))
         s.commit()
@@ -240,27 +239,89 @@ if app_mode == "💸 Sổ Nợ Nần":
                 else: st.error("Nhập lý do!")
 
     with tab5:
+        st.subheader("⚙️ Quản Lý & Xóa Dữ Liệu")
         if st.session_state['role'] == 'admin':
-            st.markdown("### 🗑️ 1. Xóa Chi Tiết Khoản Nợ (Tích Chọn)")
+            st.info("👑 **Quyền Admin:** Bạn có thể chọn tích chọn xóa cụ thể các khoản nợ, xóa sổ nợ theo nhóm hoặc reset toàn bộ hệ thống.")
+            
+            st.markdown("### 🗑️ 1. Xóa Chi Tiết Các Khoản Nợ (Tích Chọn)")
             admin_df = run_query("SELECT id, group_id, title, total_amount FROM debts ORDER BY id DESC")
             if not admin_df.empty:
                 admin_df['Chọn'] = False
-                edited_df = st.data_editor(admin_df[["Chọn", "id", "group_id", "title", "total_amount"]], hide_index=True, use_container_width=True)
+                edited_df = st.data_editor(
+                    admin_df[["Chọn", "id", "group_id", "title", "total_amount"]],
+                    column_config={
+                        "Chọn": st.column_config.CheckboxColumn("Xóa?"),
+                        "id": st.column_config.NumberColumn("ID", width="small"),
+                        "group_id": st.column_config.TextColumn("Nhóm", width="small"),
+                        "title": st.column_config.TextColumn("Nội dung", width="large"),
+                        "total_amount": st.column_config.NumberColumn("Tổng tiền", format="%.0f ₫"),
+                    },
+                    hide_index=True, use_container_width=True
+                )
                 sel_ids = edited_df[edited_df["Chọn"] == True]["id"].tolist()
-                if sel_ids and st.button("🔥 XÓA CÁC KHOẢN ĐÃ CHỌN", type="primary"):
-                    with conn.session as s:
-                        for did in sel_ids:
-                            s.execute(text("DELETE FROM debt_logs WHERE debt_id = :id"), {"id": int(did)})
-                            s.execute(text("DELETE FROM debts WHERE id = :id"), {"id": int(did)})
-                        s.commit()
-                    st.success("Đã xóa!"); st.rerun()
+                
+                if sel_ids:
+                    if st.button("🔥 XÓA CÁC KHOẢN NỢ ĐÃ CHỌN", type="primary"):
+                        with conn.session as s:
+                            for did in sel_ids:
+                                s.execute(text("DELETE FROM debt_logs WHERE debt_id = :did"), {"did": int(did)})
+                                s.execute(text("DELETE FROM debts WHERE id = :did"), {"did": int(did)})
+                            s.commit()
+                        st.success(f"🧹 Đã xóa thành công {len(sel_ids)} khoản nợ!"); st.rerun()
+            else:
+                st.caption("Không có khoản nợ nào trong hệ thống.")
+
             st.write("---")
-            confirm_all = st.text_input("Gõ XOAALL để Reset hệ thống Sổ nợ:")
-            if st.button("🔥 RESET HỆ THỐNG", type="primary", disabled=(confirm_all != "XOAALL")):
+            st.markdown("### 🗑️ 2. Xóa Vĩnh Viễn 1 Sổ Nợ Cụ Thể")
+            all_users = run_query("SELECT username FROM users WHERE role='user'")
+            if not all_users.empty:
+                group_to_delete = st.selectbox("Chọn sổ nợ (Tên cặp) muốn xóa hoàn toàn:", all_users['username'].tolist())
+                confirm_del_single = st.text_input(f"Gõ đúng chữ **`XOASO`** để xác nhận xóa sổ [{group_to_delete}]:", key="del_single_box")
+                
+                if st.button(f"🔥 XÓA VĨNH VIỄN SỔ [{group_to_delete}]", type="primary", disabled=(confirm_del_single.strip().upper() != "XOASO")):
+                    with conn.session as s:
+                        s.execute(text("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)"), {"g": group_to_delete})
+                        s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": group_to_delete})
+                        s.execute(text("DELETE FROM users WHERE username = :u AND role = 'user'"), {"u": group_to_delete})
+                        s.commit()
+                    st.success(f"🧹 Đã xóa vĩnh viễn sổ nợ [{group_to_delete}]!"); st.rerun()
+            else:
+                st.write("Chưa có sổ nợ nào trong hệ thống.")
+                
+            st.write("---")
+            st.markdown("### 💥 3. Xóa Sạch Tất Cả Các Sổ Nợ & Lịch Sử (Reset Hệ Thống)")
+            confirm_all = st.text_input("Gõ chữ **`XOAALL`** để xóa toàn bộ tất cả sổ nợ trên web:", key="xoa_all_box")
+            
+            if st.button("🔥 RESET TOÀN BỘ HỆ THỐNG", type="primary", disabled=(confirm_all.strip().upper() != "XOAALL")):
                 with conn.session as s:
-                    s.execute(text("TRUNCATE TABLE debt_logs RESTART IDENTITY; TRUNCATE TABLE debts RESTART IDENTITY CASCADE;"))
+                    s.execute(text("TRUNCATE TABLE debt_logs RESTART IDENTITY;"))
+                    s.execute(text("TRUNCATE TABLE debts RESTART IDENTITY CASCADE;"))
+                    s.execute(text("DELETE FROM users WHERE role = 'user';"))
                     s.commit()
-                st.success("Đã Reset!"); st.rerun()
+                st.success("🧹 Đã xóa sạch toàn bộ sổ nợ và giao dịch!"); st.rerun()
+
+        else:
+            st.warning("⚠️ **BẢO MẬT TUYỆT ĐỐI:** Yêu cầu **nhập Mật khẩu Admin** để xóa sạch lịch sử nợ của nhóm này.")
+            entered_admin_pwd = st.text_input("Nhập Mật khẩu Admin để xác nhận xóa:", type="password", key="admin_pwd_reset")
+            confirm_code = st.text_input("Gõ chữ **`XOA`** vào ô dưới", placeholder="Nhập XOA...", key="xoa_user_box")
+            
+            is_admin_pwd_correct = False
+            if entered_admin_pwd:
+                check_admin = run_query("SELECT username FROM users WHERE role = 'admin' AND password = :p", params={"p": entered_admin_pwd})
+                if not check_admin.empty:
+                    is_admin_pwd_correct = True
+
+            is_disabled = not (is_admin_pwd_correct and confirm_code.strip().upper() == "XOA")
+            
+            if st.button("🔥 XÓA SỔ NỢ NHÓM NÀY", type="primary", disabled=is_disabled):
+                with conn.session as s:
+                    s.execute(text("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)"), {"g": st.session_state['group_id']})
+                    s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": st.session_state['group_id']})
+                    s.commit()
+                st.success("🧹 Đã xóa sạch lịch sử nợ của nhóm bạn!"); st.rerun()
+            
+            if entered_admin_pwd and not is_admin_pwd_correct:
+                st.error("❌ Mật khẩu Admin không chính xác!")
 
 # ==========================================
 # KHỐI 2: SỔ CHI TIÊU
