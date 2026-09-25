@@ -58,8 +58,8 @@ st.markdown("""
     .card-remaining { background: linear-gradient(135deg, #4A00E0 0%, #8E2DE2 100%); }
     .metric-label { font-size: 1.2rem; font-weight: 700; opacity: 0.9; margin-bottom: 8px; }
     .metric-value { font-size: 2.2rem; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.2); }
-    [data-testid="stDataFrame"] { font-size: 1.1rem !important; }
-    [data-testid="stDataFrame"] th { background-color: #2b3a42 !important; color: white !important; font-weight: bold !important; font-size: 1.1rem !important; }
+    [data-testid="stDataFrame"] { font-size: 1.05rem !important; }
+    [data-testid="stDataFrame"] th { background-color: #2b3a42 !important; color: white !important; font-weight: bold !important; font-size: 1.05rem !important; }
     .stTabs [data-baseweb="tab-list"] { gap: 5px; overflow-x: auto; }
     .stTabs [data-baseweb="tab"] { height: auto; min-height: 48px; background-color: #f0f2f6; border-radius: 10px; padding: 10px 15px; font-size: 1rem !important; font-weight: 700 !important; color: #495057; border: none; white-space: nowrap; }
     .stTabs [aria-selected="true"] { background: linear-gradient(90deg, #00C9FF 0%, #92FE9D 100%) !important; color: #000 !important; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
@@ -79,6 +79,7 @@ def run_query(sql, params=None):
 
 def init_db():
     with conn.session as s:
+        # Bảng Users
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 username VARCHAR(50) PRIMARY KEY,
@@ -87,9 +88,34 @@ def init_db():
                 group_id VARCHAR(50) NOT NULL
             );
         """))
+        # Bảng Debts
         s.execute(text("""
-            DO $$             BEGIN                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debts' AND column_name='group_id') THEN                     ALTER TABLE debts ADD COLUMN group_id VARCHAR(50) DEFAULT 'Mặc định';                 END IF;             END $$;
+            CREATE TABLE IF NOT EXISTS debts (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                borrower VARCHAR(50),
+                lender VARCHAR(50),
+                total_amount NUMERIC DEFAULT 0,
+                paid_amount NUMERIC DEFAULT 0,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                group_id VARCHAR(50) DEFAULT 'Mặc định'
+            );
         """))
+        # Bảng Nhật ký giao dịch (Trả tiền & Sửa sai)
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS debt_logs (
+                id SERIAL PRIMARY KEY,
+                debt_id INT NOT NULL,
+                log_type VARCHAR(50) NOT NULL,
+                amount NUMERIC NOT NULL,
+                note TEXT,
+                created_by VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """))
+        
+        # Kiểm tra Admin
         count = s.execute(text("SELECT COUNT(*) FROM users WHERE role='admin';")).scalar()
         if count == 0:
             s.execute(text("INSERT INTO users (username, password, role, group_id) VALUES ('admin', 'admin123', 'admin', 'ALL')"))
@@ -104,6 +130,25 @@ def fetch_debts(role, group_id):
         return run_query("SELECT id, title, borrower, lender, total_amount, paid_amount, note, created_at, group_id FROM debts ORDER BY id DESC")
     else:
         return run_query("SELECT id, title, borrower, lender, total_amount, paid_amount, note, created_at, group_id FROM debts WHERE group_id = :g ORDER BY id DESC", params={"g": group_id})
+
+def fetch_logs(role, group_id):
+    if role == 'admin':
+        sql = """
+            SELECT l.id, l.created_at, d.group_id, d.title, l.log_type, l.amount, l.note, l.created_by
+            FROM debt_logs l
+            JOIN debts d ON l.debt_id = d.id
+            ORDER BY l.id DESC
+        """
+        return run_query(sql)
+    else:
+        sql = """
+            SELECT l.id, l.created_at, d.group_id, d.title, l.log_type, l.amount, l.note, l.created_by
+            FROM debt_logs l
+            JOIN debts d ON l.debt_id = d.id
+            WHERE d.group_id = :g
+            ORDER BY l.id DESC
+        """
+        return run_query(sql, params={"g": group_id})
 
 # --- 4. GIAO DIỆN TRANG CHỦ & ĐĂNG NHẬP ---
 if 'logged_in' not in st.session_state:
@@ -226,8 +271,9 @@ if not df.empty:
     """, unsafe_allow_html=True)
 
 # --- Các Tab chức năng ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Danh sách", "➕ Thêm mới", "💳 Trả tiền", "✏️ Sửa sai", "⚙️ Quản lý"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Danh sách & Rà soát", "➕ Thêm mới", "💳 Trả tiền", "✏️ Sửa sai", "⚙️ Quản lý"])
 
+# ----- TAB 1: DANH SÁCH & NHẬT KÝ GIAO DỊCH RÀ SOÁT -----
 with tab1:
     st.subheader("📋 Chi Tiết Các Khoản Nợ")
     if not df.empty:
@@ -249,20 +295,46 @@ with tab1:
                 "id": st.column_config.NumberColumn("ID", width="small"),
                 "Ngày vay": st.column_config.TextColumn("Ngày tạo (Giờ)", width="medium"),
                 "group_id": st.column_config.TextColumn("Nhóm", width="small"),
-                "title": st.column_config.TextColumn("Nội dung", width="large"),
+                "title": st.column_config.TextColumn("Nội dung khoản nợ", width="large"),
                 "borrower": st.column_config.TextColumn("Người nợ", width="medium"),
                 "lender": st.column_config.TextColumn("Chủ nợ", width="medium"),
                 "total_amount": st.column_config.NumberColumn("Tổng nợ", format="%.0f ₫"),
                 "paid_amount": st.column_config.NumberColumn("Đã trả", format="%.0f ₫"),
                 "remaining": st.column_config.NumberColumn("Còn thiếu", format="%.0f ₫"),
                 "Trạng thái": st.column_config.TextColumn("Trạng thái", width="small"),
-                "note": st.column_config.TextColumn("Ghi chú (Lịch sử sửa đổi)", width="large"),
+                "note": st.column_config.TextColumn("Ghi chú ban đầu", width="medium"),
             },
-            use_container_width=True, hide_index=True, height=400
+            use_container_width=True, hide_index=True, height=280
         )
+        
+        st.write("---")
+        # PHẦN BẢNG NHẬT KÝ GIAO DỊCH HIỂN THỊ RIÊNG
+        st.subheader("🔍 Nhật Ký Giao Dịch & Lịch Sử Trả / Sửa Tiền")
+        st.info("Bảng dưới đây ghi lại chi tiết từng lần trả tiền lẻ cũng như lịch sử điều chỉnh tiền nợ để hai người dễ dàng rà soát.")
+        
+        logs_df = fetch_logs(st.session_state['role'], st.session_state['group_id'])
+        if not logs_df.empty:
+            logs_df['Thời gian'] = logs_df['created_at'].apply(format_date)
+            
+            st.dataframe(
+                logs_df[["Thời gian", "group_id", "title", "log_type", "amount", "note", "created_by"]],
+                column_config={
+                    "Thời gian": st.column_config.TextColumn("Thời gian", width="medium"),
+                    "group_id": st.column_config.TextColumn("Nhóm", width="small"),
+                    "title": st.column_config.TextColumn("Khoản nợ liên quan", width="large"),
+                    "log_type": st.column_config.TextColumn("Loại thao tác", width="medium"),
+                    "amount": st.column_config.NumberColumn("Số tiền phát sinh", format="%.0f ₫"),
+                    "note": st.column_config.TextColumn("Nội dung / Lý do giao dịch", width="large"),
+                    "created_by": st.column_config.TextColumn("Người thực hiện", width="medium"),
+                },
+                use_container_width=True, hide_index=True, height=320
+            )
+        else:
+            st.caption("Chưa có lịch sử giao dịch trả tiền hoặc sửa sai nào.")
     else:
         st.info("🎈 Sổ nợ đang trống.")
 
+# ----- TAB 2: THÊM MỚI -----
 with tab2:
     st.subheader("➕ Ghi Khoản Nợ Mới")
     with st.form("add_debt_form", clear_on_submit=True):
@@ -271,7 +343,7 @@ with tab2:
         borrower = col_a.text_input("Người nợ (Ai vay?)")
         lender = col_b.text_input("Chủ nợ (Ai cho mượn?)")
         total_amount = st.number_input("Tổng số tiền (VNĐ)", min_value=0.0, step=50000.0, format="%.0f")
-        note = st.text_area("Ghi chú thêm (Tùy chọn)")
+        note = st.text_area("Ghi chú thêm ban đầu (Tùy chọn)")
         
         submitted = st.form_submit_button("💾 LƯU KHOẢN NỢ GẤP", type="primary")
         if submitted:
@@ -292,8 +364,10 @@ with tab2:
             else:
                 st.error("⚠️ Vui lòng nhập Nội dung và Số tiền lớn hơn 0.")
 
+# ----- TAB 3: TRẢ TIỀN (GHI NHẬN NỘI DUNG TỪNG LẦN TRẢ) -----
 with tab3:
     st.subheader("💳 Ghi Nhận Trả Tiền")
+    st.info("Mỗi lần trả tiền (dù ít hay nhiều), bạn hãy ghi rõ nội dung/lý do để lưu vào Nhật ký giao dịch.")
     if not df.empty:
         unpaid_df = df[df["remaining"] > 0]
         if not unpaid_df.empty:
@@ -306,22 +380,45 @@ with tab3:
             selected_row = df[df["id"] == selected_id].iloc[0]
             max_pay = float(selected_row["remaining"])
             
-            pay_amount = st.number_input("2. Số tiền trả lần này (VNĐ)", min_value=1.0, max_value=max_pay, value=max_pay, step=50000.0, format="%.0f")
+            pay_amount = st.number_input("2. Số tiền trả lần này (VNĐ)", min_value=1.0, max_value=max_pay, value=max_pay, step=10000.0, format="%.0f")
+            pay_note = st.text_input("3. Nội dung / Lý do trả tiền (Bắt buộc)", placeholder="VD: Trả tiền ăn sáng, Chuyển khoản Vietcombank, Trả bớt 200k...")
             
-            if st.button("✅ XÁC NHẬN ĐÃ TRẢ", type="primary"):
-                new_paid_total = float(selected_row["paid_amount"]) + float(pay_amount)
-                with conn.session as s:
-                    sql = text("UPDATE debts SET paid_amount = :new_paid WHERE id = :id")
-                    s.execute(sql, {"new_paid": float(new_paid_total), "id": int(selected_id)})
-                    s.commit()
-                st.success(f"🎉 Đã cập nhật khoản trả {float(pay_amount):,.0f} ₫.")
-                st.rerun()
+            if st.button("✅ XÁC NHẬN ĐÃ TRẢ TIỀN", type="primary"):
+                if not pay_note.strip():
+                    st.error("⚠️ Vui lòng ghi rõ nội dung giao dịch để tiện rà soát sau này!")
+                else:
+                    new_paid_total = float(selected_row["paid_amount"]) + float(pay_amount)
+                    actor = st.session_state['username']
+                    
+                    with conn.session as s:
+                        # 1. Cập nhật tổng số tiền đã trả
+                        sql_update = text("UPDATE debts SET paid_amount = :new_paid WHERE id = :id")
+                        s.execute(sql_update, {"new_paid": float(new_paid_total), "id": int(selected_id)})
+                        
+                        # 2. Thêm một dòng nhật ký giao dịch riêng
+                        sql_log = text("""
+                            INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by)
+                            VALUES (:debt_id, '💳 Trả tiền', :amount, :note, :created_by)
+                        """)
+                        s.execute(sql_log, {
+                            "debt_id": int(selected_id),
+                            "amount": float(pay_amount),
+                            "note": pay_note.strip(),
+                            "created_by": actor
+                        })
+                        s.commit()
+                        
+                    st.success(f"🎉 Đã ghi nhận khoản trả {float(pay_amount):,.0f} ₫ vào nhật ký!")
+                    st.rerun()
         else:
             st.success("🎉 Wow! Không còn ai nợ ai cả.")
+    else:
+        st.info("Chưa có khoản nợ nào.")
 
+# ----- TAB 4: SỬA SAI (GHI NHẬN NỘI DUNG SỬA SAI VÀO NHẬT KÝ) -----
 with tab4:
     st.subheader("✏️ Điều Chỉnh Khoản Nợ (Ghi Nhầm)")
-    st.info("Dùng khi bạn lỡ nhập sai số tiền gốc (thừa hoặc thiếu) và muốn cộng/trừ lại cho chuẩn. Hệ thống sẽ lưu lại người sửa và lý do vào cột ghi chú.")
+    st.info("Dùng khi bạn lỡ nhập sai số tiền gốc (thừa hoặc thiếu). Hệ thống sẽ tự động ghi nhận lịch sử vào Nhật ký giao dịch.")
     if not df.empty:
         adj_options = {
             f"#{row['id']} - {row['title']} | Nợ gốc hiện tại: {float(row['total_amount']):,.0f} ₫": int(row['id']) 
@@ -337,33 +434,40 @@ with tab4:
         
         if st.button("💾 LƯU ĐIỀU CHỈNH", type="primary"):
             if not adj_note.strip():
-                st.error("⚠️ Vui lòng nhập lý do để ghi chú lại lịch sử sửa đổi!")
+                st.error("⚠️ Vui lòng nhập lý do điều chỉnh!")
             else:
                 current_total = float(selected_row_adj["total_amount"])
-                current_note = str(selected_row_adj["note"]) if pd.notna(selected_row_adj["note"]) and str(selected_row_adj["note"]).strip() != "" else ""
-                
-                # Lấy thời gian hiện tại
-                time_str = datetime.now().strftime('%d/%m %H:%M')
                 actor = st.session_state['username']
                 
                 if "Cộng" in adj_type:
                     new_total = current_total + adj_amount
-                    note_append = f"[{time_str} | +{adj_amount:,.0f}đ bởi {actor}: {adj_note}]"
+                    log_type_str = "🟢 Cộng tiền gốc"
                 else:
                     new_total = current_total - adj_amount
                     if new_total < 0: 
                         new_total = 0
-                    note_append = f"[{time_str} | -{adj_amount:,.0f}đ bởi {actor}: {adj_note}]"
-                
-                # Nối ghi chú cũ với lịch sử sửa đổi rõ ràng
-                new_note = f"{current_note} {note_append}".strip()
+                    log_type_str = "🔴 Trừ tiền gốc"
                 
                 with conn.session as s:
-                    sql = text("UPDATE debts SET total_amount = :new_total, note = :new_note WHERE id = :id")
-                    s.execute(sql, {"new_total": new_total, "new_note": new_note, "id": int(selected_id_adj)})
+                    # 1. Cập nhật tiền gốc
+                    sql_update = text("UPDATE debts SET total_amount = :new_total WHERE id = :id")
+                    s.execute(sql_update, {"new_total": new_total, "id": int(selected_id_adj)})
+                    
+                    # 2. Thêm vào Nhật ký giao dịch
+                    sql_log = text("""
+                        INSERT INTO debt_logs (debt_id, log_type, amount, note, created_by)
+                        VALUES (:debt_id, :log_type, :amount, :note, :created_by)
+                    """)
+                    s.execute(sql_log, {
+                        "debt_id": int(selected_id_adj),
+                        "log_type": log_type_str,
+                        "amount": float(adj_amount),
+                        "note": adj_note.strip(),
+                        "created_by": actor
+                    })
                     s.commit()
                     
-                st.success(f"🎉 Đã sửa tiền gốc thành {new_total:,.0f} ₫. Lịch sử đã được cập nhật vào cột Ghi chú!")
+                st.success(f"🎉 Đã sửa tiền gốc thành {new_total:,.0f} ₫ và cập nhật vào Nhật ký giao dịch!")
                 st.rerun()
     else:
         st.info("Chưa có khoản nợ nào để sửa.")
@@ -386,10 +490,11 @@ with tab5:
             
             if st.button(f"🔥 XÓA VĨNH VIỄN SỔ [{group_to_delete}]", type="primary", disabled=(confirm_del_single.strip().upper() != "XOASO")):
                 with conn.session as s:
+                    s.execute(text("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)"), {"g": group_to_delete})
                     s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": group_to_delete})
                     s.execute(text("DELETE FROM users WHERE username = :u AND role = 'user'"), {"u": group_to_delete})
                     s.commit()
-                st.success(f"🧹 Đã xóa vĩnh viễn sổ nợ [{group_to_delete}] và toàn bộ lịch sử giao dịch!")
+                st.success(f"🧹 Đã xóa vĩnh viễn sổ nợ [{group_to_delete}] và toàn bộ nhật ký giao dịch!")
                 st.rerun()
         else:
             st.write("Chưa có sổ nợ nào trong hệ thống.")
@@ -400,7 +505,8 @@ with tab5:
         
         if st.button("🔥 RESET TOÀN BỘ HỆ THỐNG", type="primary", disabled=(confirm_all.strip().upper() != "XOAALL")):
             with conn.session as s:
-                s.execute(text("TRUNCATE TABLE debts RESTART IDENTITY;"))
+                s.execute(text("TRUNCATE TABLE debt_logs RESTART IDENTITY;"))
+                s.execute(text("TRUNCATE TABLE debts RESTART IDENTITY CASCADE;"))
                 s.execute(text("DELETE FROM users WHERE role = 'user';"))
                 s.commit()
             st.success("🧹 Đã xóa sạch toàn bộ sổ nợ và giao dịch trên hệ thống!")
@@ -408,7 +514,7 @@ with tab5:
 
     # 2. QUYỀN USER THƯỜNG: Bắt buộc nhập Mật khẩu Admin mới được phép xóa sổ của nhóm
     else:
-        st.warning("⚠️ **BẢO MẬT TUYỆT ĐỐI:** Vì mật khẩu sổ nợ cả hai người đều biết, hệ thống yêu cầu phải **nhập Mật khẩu Admin** mới được phép xóa sạch lịch sử nợ của nhóm này.")
+        st.warning("⚠️ **BẢO MẬT TUYỆT ĐỐI:** Để tránh xóa nhầm dữ liệu, hệ thống yêu cầu phải **nhập Mật khẩu Admin** mới được phép xóa sạch lịch sử nợ của nhóm này.")
         
         entered_admin_pwd = st.text_input("Nhập Mật khẩu Admin để xác nhận xóa:", type="password", key="admin_pwd_reset")
         confirm_code = st.text_input("Gõ chữ **`XOA`** vào ô dưới", placeholder="Nhập XOA...")
@@ -426,6 +532,7 @@ with tab5:
         
         if st.button("🔥 XÓA SỔ NỢ NHÓM NÀY", type="primary", disabled=is_disabled):
             with conn.session as s:
+                s.execute(text("DELETE FROM debt_logs WHERE debt_id IN (SELECT id FROM debts WHERE group_id = :g)"), {"g": st.session_state['group_id']})
                 s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": st.session_state['group_id']})
                 s.commit()
             st.success("🧹 Đã xóa sạch lịch sử nợ của nhóm bạn!")
