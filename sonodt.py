@@ -90,7 +90,6 @@ def init_db():
         s.execute(text("""
             DO $$             BEGIN                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debts' AND column_name='group_id') THEN                     ALTER TABLE debts ADD COLUMN group_id VARCHAR(50) DEFAULT 'Mặc định';                 END IF;             END $$;
         """))
-        # Tạo / Cập nhật lại mật khẩu Admin mặc định là admin123
         count = s.execute(text("SELECT COUNT(*) FROM users WHERE role='admin';")).scalar()
         if count == 0:
             s.execute(text("INSERT INTO users (username, password, role, group_id) VALUES ('admin', 'admin123', 'admin', 'ALL')"))
@@ -116,7 +115,6 @@ if not st.session_state['logged_in']:
     
     col1, col2 = st.columns(2, gap="large")
     
-    # Khối 1: Danh sách các sổ nợ đã tạo
     with col1:
         with st.container(border=True):
             st.subheader("📖 Vào Sổ Nợ Của Bạn")
@@ -141,7 +139,6 @@ if not st.session_state['logged_in']:
                 st.info("Chưa có sổ nợ nào. Hãy tạo sổ mới ở bên cạnh 👉")
                 
             st.write("---")
-            # Khối Admin
             with st.expander("👑 Đăng nhập Admin (Full quyền)"):
                 admin_u = st.text_input("Tài khoản Admin", value="admin", key="ad_u")
                 admin_p = st.text_input("Mật khẩu Admin", type="password", key="ad_p")
@@ -157,7 +154,6 @@ if not st.session_state['logged_in']:
                     else:
                         st.error("Sai tài khoản hoặc mật khẩu Admin!")
 
-    # Khối 2: Tạo sổ nợ mới
     with col2:
         with st.container(border=True):
             st.subheader("➕ Tạo Sổ Nợ Mới")
@@ -230,7 +226,7 @@ if not df.empty:
     """, unsafe_allow_html=True)
 
 # --- Các Tab chức năng ---
-tab1, tab2, tab3, tab4 = st.tabs(["📋 Danh sách", "➕ Thêm mới", "💳 Trả tiền", "⚙️ Reset / Quản lý"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Danh sách", "➕ Thêm mới", "💳 Trả tiền", "✏️ Sửa sai", "⚙️ Quản lý"])
 
 with tab1:
     st.subheader("📋 Chi Tiết Các Khoản Nợ")
@@ -323,17 +319,63 @@ with tab3:
         else:
             st.success("🎉 Wow! Không còn ai nợ ai cả.")
 
-# ----- TAB 4: QUẢN LÝ VÀ XÓA SỔ NỢ -----
+# ----- TAB 4: SỬA SAI (TÍNH NĂNG MỚI) -----
 with tab4:
+    st.subheader("✏️ Điều Chỉnh Khoản Nợ (Ghi Nhầm)")
+    st.info("Dùng khi bạn lỡ nhập sai số tiền gốc (thừa hoặc thiếu) và muốn cộng/trừ lại cho chuẩn.")
+    if not df.empty:
+        # Lấy danh sách tất cả các khoản nợ
+        adj_options = {
+            f"#{row['id']} - {row['title']} | Nợ gốc hiện tại: {float(row['total_amount']):,.0f} ₫": int(row['id']) 
+            for _, row in df.iterrows()
+        }
+        selected_label_adj = st.selectbox("1. Chọn khoản nợ bị ghi sai:", list(adj_options.keys()), key="adj_sel")
+        selected_id_adj = adj_options[selected_label_adj]
+        selected_row_adj = df[df["id"] == selected_id_adj].iloc[0]
+        
+        adj_type = st.radio("2. Bạn muốn làm gì?", ["🟢 Cộng thêm tiền (Lúc trước ghi thiếu)", "🔴 Trừ bớt tiền (Lúc trước ghi thừa)"], horizontal=True)
+        adj_amount = st.number_input("3. Số tiền muốn cộng/trừ (VNĐ)", min_value=1.0, step=10000.0, format="%.0f")
+        adj_note = st.text_input("4. Lý do điều chỉnh (Bắt buộc)", placeholder="VD: Quên tính tiền nước, nhập nhầm dư 1 số 0...")
+        
+        if st.button("💾 LƯU ĐIỀU CHỈNH", type="primary"):
+            if not adj_note.strip():
+                st.error("⚠️ Vui lòng nhập lý do để ghi chú lại lịch sử sửa đổi!")
+            else:
+                current_total = float(selected_row_adj["total_amount"])
+                # Xử lý chuỗi ghi chú cũ (nếu có thì giữ nguyên, null thì để rỗng)
+                current_note = str(selected_row_adj["note"]) if pd.notna(selected_row_adj["note"]) and str(selected_row_adj["note"]).strip() != "" else ""
+                
+                if "Cộng" in adj_type:
+                    new_total = current_total + adj_amount
+                    note_append = f"[+ {adj_amount:,.0f}đ: {adj_note}]"
+                else:
+                    new_total = current_total - adj_amount
+                    if new_total < 0: 
+                        new_total = 0
+                    note_append = f"[- {adj_amount:,.0f}đ: {adj_note}]"
+                
+                # Nối ghi chú cũ với lịch sử sửa đổi
+                new_note = f"{current_note} {note_append}".strip()
+                
+                with conn.session as s:
+                    sql = text("UPDATE debts SET total_amount = :new_total, note = :new_note WHERE id = :id")
+                    s.execute(sql, {"new_total": new_total, "new_note": new_note, "id": int(selected_id_adj)})
+                    s.commit()
+                    
+                st.success(f"🎉 Đã sửa tiền gốc thành {new_total:,.0f} ₫. Lịch sử đã được lưu vào cột Ghi chú!")
+                st.rerun()
+    else:
+        st.info("Chưa có khoản nợ nào để sửa.")
+
+# ----- TAB 5: QUẢN LÝ VÀ XÓA SỔ NỢ -----
+with tab5:
     st.subheader("⚙️ Quản Lý & Xóa Dữ Liệu")
     
-    # 1. QUYỀN ADMIN: Quản lý xóa toàn bộ hoặc từng Sổ Nợ
     if st.session_state['role'] == 'admin':
         st.info("👑 **Quyền Admin:** Bạn có thể xóa từng Sổ Nợ cụ thể hoặc Reset toàn bộ hệ thống.")
         
         all_users = run_query("SELECT username FROM users WHERE role='user'")
         
-        # Quyền 1: Xóa 1 Sổ Nợ chỉ định (Xóa cả nhóm + Lịch sử nợ)
         st.write("---")
         st.markdown("### 🗑️ 1. Xóa Vĩnh Viễn 1 Sổ Nợ Cụ Thể")
         if not all_users.empty:
@@ -342,9 +384,7 @@ with tab4:
             
             if st.button(f"🔥 XÓA VĨNH VIỄN SỔ [{group_to_delete}]", type="primary", disabled=(confirm_del_single.strip().upper() != "XOASO")):
                 with conn.session as s:
-                    # Xóa tất cả các giao dịch của sổ này
                     s.execute(text("DELETE FROM debts WHERE group_id = :g"), {"g": group_to_delete})
-                    # Xóa tài khoản/tên sổ khỏi danh sách
                     s.execute(text("DELETE FROM users WHERE username = :u AND role = 'user'"), {"u": group_to_delete})
                     s.commit()
                 st.success(f"🧹 Đã xóa vĩnh viễn sổ nợ [{group_to_delete}] và toàn bộ lịch sử giao dịch!")
@@ -352,7 +392,6 @@ with tab4:
         else:
             st.write("Chưa có sổ nợ nào trong hệ thống.")
             
-        # Quyền 2: Xóa SẠCH TOÀN BỘ hệ thống
         st.write("---")
         st.markdown("### 💥 2. Xóa Sạch Tất Cả Các Sổ Nợ & Lịch Sử (Reset Hệ Thống)")
         confirm_all = st.text_input("Gõ chữ **`XOAALL`** để xóa toàn bộ tất cả sổ nợ trên web:", placeholder="Nhập XOAALL...")
@@ -365,7 +404,6 @@ with tab4:
             st.success("🧹 Đã xóa sạch toàn bộ sổ nợ và giao dịch trên hệ thống!")
             st.rerun()
 
-    # 2. QUYỀN USER THƯỜNG: Chỉ xóa được dữ liệu giao dịch trong nhóm mình
     else:
         st.warning("**CẢNH BÁO:** Thao tác này sẽ xóa sạch danh sách nợ của nhóm bạn. Tên sổ nợ vẫn được giữ nguyên.")
         confirm_code = st.text_input("Gõ chữ XOA vào ô dưới để mở khóa nút xóa", placeholder="Nhập XOA...")
