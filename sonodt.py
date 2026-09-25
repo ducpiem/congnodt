@@ -40,8 +40,9 @@ st.markdown("""
 conn = st.connection("neon", type="sql")
 
 def run_query(sql, params=None):
-    with conn.session as s:
-        result = s.execute(text(sql), params or {})
+    # Đổi sang engine.connect() ép đọc DB thật, không dùng cache ảo của session
+    with conn.engine.connect() as c:
+        result = c.execute(text(sql), params or {})
         keys = result.keys()
         data = result.fetchall()
         return pd.DataFrame(data, columns=keys) if data else pd.DataFrame(columns=keys)
@@ -141,12 +142,17 @@ if not st.session_state['logged_in']:
 # --- 5. GIAO DIỆN CHÍNH ---
 st.sidebar.markdown(f"👤 Tài khoản: **{st.session_state['username']}**")
 st.sidebar.markdown(f"🏷️ Quyền: **{st.session_state['role'].upper()}**")
+
+# Thêm nút Làm mới ở đây thay vì dùng F5
+if st.sidebar.button("🔄 Làm mới dữ liệu", use_container_width=True):
+    st.rerun()
+
 st.sidebar.write("---")
 
 app_mode = st.sidebar.radio("📌 CHỌN CHỨC NĂNG:", ["💸 Sổ Nợ Nần", "🛒 Sổ Chi Tiêu"])
 st.sidebar.write("---")
 
-if st.sidebar.button("Đăng xuất"):
+if st.sidebar.button("Đăng xuất", use_container_width=True):
     st.session_state.clear()
     st.rerun()
 
